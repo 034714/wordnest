@@ -110,144 +110,142 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const SizedBox(height: 28),
-              Container(
-                width: double.infinity,
-                clipBehavior: Clip.antiAlias,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(24),
-                  color: dark
-                      ? const Color(0xff233e2e)
-                      : const Color(0xffe7efdd),
-                ),
-                child: Stack(
-                  children: [
-                    Positioned(
-                      right: -30,
-                      bottom: -72,
-                      child: Container(
-                        width: 260,
-                        height: 260,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: theme.colorScheme.primary.withValues(
-                            alpha: .06,
+              SurfaceMaterial(
+                color: dark ? const Color(0xff233e2e) : const Color(0xffe7efdd),
+                borderRadius: BorderRadius.circular(24),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: Stack(
+                    children: [
+                      Positioned(
+                        right: -30,
+                        bottom: -72,
+                        child: Container(
+                          width: 260,
+                          height: 260,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: theme.colorScheme.primary.withValues(
+                              alpha: .06,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    Positioned(
-                      right: 45,
-                      top: 22,
-                      child: Transform.rotate(
-                        angle: -.22,
-                        child: Icon(
-                          Icons.spa_rounded,
-                          size: 125,
-                          color: theme.colorScheme.primary.withValues(
-                            alpha: .10,
+                      Positioned(
+                        right: 45,
+                        top: 22,
+                        child: Transform.rotate(
+                          angle: -.22,
+                          child: Icon(
+                            Icons.spa_rounded,
+                            size: 125,
+                            color: theme.colorScheme.primary.withValues(
+                              alpha: .10,
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    Padding(
-                      padding: const EdgeInsets.all(30),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            c.book == null
-                                ? '从一本词书开始'
-                                : c.resumable
-                                ? '你的上次进度，留在这里'
-                                : '碎片时间，也能慢慢记住',
-                            style: TextStyle(
-                              color: theme.colorScheme.primary,
-                              fontWeight: FontWeight.w600,
-                              fontSize: 13,
+                      Padding(
+                        padding: const EdgeInsets.all(30),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              c.book == null
+                                  ? '从一本词书开始'
+                                  : c.resumable
+                                  ? '你的上次进度，留在这里'
+                                  : '碎片时间，也能慢慢记住',
+                              style: TextStyle(
+                                color: theme.colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 13,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 14),
-                          Text(
-                            c.book == null
-                                ? '带上你的词书，\n开始轻松记词。'
-                                : '一小轮，${count ?? c.settings.roundSize} 个词。\n刚好适合现在。',
-                            style: const TextStyle(
-                              fontSize: 32,
-                              height: 1.45,
-                              fontWeight: FontWeight.w700,
-                            ),
-                          ),
-                          const SizedBox(height: 12),
-                          Text(
-                            c.book == null
-                                ? '支持 JSON / TXT / CSV，保留原书顺序。\n也可以用自编的 24 个演示词，先试一试。'
-                                : '新词先认识，复习再回忆。随时停下，进度会自动保留。',
-                            style: TextStyle(
-                              height: 1.8,
-                              color: theme.colorScheme.onSurfaceVariant,
-                            ),
-                          ),
-                          const SizedBox(height: 24),
-                          if (c.book != null) ...[
-                            Wrap(
-                              spacing: 8,
-                              children: [
-                                for (final item in const {
-                                  'quick': '轻量记词',
-                                  'formal': '回忆验证',
-                                  'typing': '键盘强化',
-                                }.entries)
-                                  ChoiceChip(
-                                    label: Text(item.value),
-                                    selected: selectedMode == item.key,
-                                    onSelected: c.saving
-                                        ? null
-                                        : (_) => setState(
-                                            () => selectedMode = item.key,
-                                          ),
-                                  ),
-                              ],
+                            const SizedBox(height: 14),
+                            Text(
+                              c.book == null
+                                  ? '带上你的词书，\n开始轻松记词。'
+                                  : '一小轮，${count ?? c.settings.roundSize} 个词。\n刚好适合现在。',
+                              style: const TextStyle(
+                                fontSize: 32,
+                                height: 1.45,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
                             const SizedBox(height: 12),
-                            RoundCountChips(
-                              value: count ?? c.settings.roundSize,
-                              enabled: !c.saving,
-                              onChanged: (value) =>
-                                  setState(() => count = value),
-                            ),
-                            const SizedBox(height: 18),
-                          ],
-                          Wrap(
-                            spacing: 12,
-                            runSpacing: 12,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              FilledButton.icon(
-                                onPressed: c.saving
-                                    ? null
-                                    : c.book == null
-                                    ? onLibrary
-                                    : () => onStart(selectedMode, resume: true),
-                                icon: Icon(
-                                  c.book == null
-                                      ? Icons.download_rounded
-                                      : Icons.play_arrow_rounded,
-                                  size: 22,
-                                ),
-                                label: Text(
-                                  c.book == null
-                                      ? '导入我的词书'
-                                      : _resumeFor(c, selectedMode)
-                                      ? copy.resume
-                                      : copy.start,
-                                ),
+                            Text(
+                              c.book == null
+                                  ? '支持 JSON / TXT / CSV，保留原书顺序。\n也可以用自编的 24 个演示词，先试一试。'
+                                  : '新词先认识，复习再回忆。随时停下，进度会自动保留。',
+                              style: TextStyle(
+                                height: 1.8,
+                                color: theme.colorScheme.onSurfaceVariant,
                               ),
+                            ),
+                            const SizedBox(height: 24),
+                            if (c.book != null) ...[
+                              Wrap(
+                                spacing: 8,
+                                children: [
+                                  for (final item in const {
+                                    'quick': '轻量记词',
+                                    'formal': '回忆验证',
+                                    'typing': '键盘强化',
+                                  }.entries)
+                                    ChoiceChip(
+                                      label: Text(item.value),
+                                      selected: selectedMode == item.key,
+                                      onSelected: c.saving
+                                          ? null
+                                          : (_) => setState(
+                                              () => selectedMode = item.key,
+                                            ),
+                                    ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              RoundCountChips(
+                                value: count ?? c.settings.roundSize,
+                                enabled: !c.saving,
+                                onChanged: (value) =>
+                                    setState(() => count = value),
+                              ),
+                              const SizedBox(height: 18),
                             ],
-                          ),
-                        ],
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              crossAxisAlignment: WrapCrossAlignment.center,
+                              children: [
+                                FilledButton.icon(
+                                  onPressed: c.saving
+                                      ? null
+                                      : c.book == null
+                                      ? onLibrary
+                                      : () =>
+                                            onStart(selectedMode, resume: true),
+                                  icon: Icon(
+                                    c.book == null
+                                        ? Icons.download_rounded
+                                        : Icons.play_arrow_rounded,
+                                    size: 22,
+                                  ),
+                                  label: Text(
+                                    c.book == null
+                                        ? '导入我的词书'
+                                        : _resumeFor(c, selectedMode)
+                                        ? copy.resume
+                                        : copy.start,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               const SizedBox(height: 22),
@@ -294,7 +292,8 @@ class _HomePageState extends State<HomePage> {
                         SizedBox(
                           width:
                               (constraints.maxWidth - 14 * (cols - 1)) / cols,
-                          child: Card(
+                          child: SurfaceCard(
+                            padding: EdgeInsets.zero,
                             child: Padding(
                               padding: const EdgeInsets.all(21),
                               child: Column(
@@ -354,7 +353,8 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const SizedBox(height: 12),
-              Card(
+              SurfaceCard(
+                padding: EdgeInsets.zero,
                 child: Padding(
                   padding: const EdgeInsets.all(24),
                   child: Column(
@@ -498,7 +498,8 @@ class _HomePageState extends State<HomePage> {
     String subtitle,
     IconData icon,
     VoidCallback onTap,
-  ) => Card(
+  ) => SurfaceCard(
+    padding: EdgeInsets.zero,
     child: InkWell(
       borderRadius: BorderRadius.circular(20),
       onTap: controller.book == null ? onLibrary : onTap,

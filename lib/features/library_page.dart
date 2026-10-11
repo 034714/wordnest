@@ -30,6 +30,9 @@ class _LibraryPageState extends State<LibraryPage> {
   int _visibleWordCount = 60;
   bool _onlyNotebook = false;
 
+  /// 'book' | 'alpha' | 'noted'; noted puts words with a personal note first.
+  String _sortOrder = 'book';
+
   AppController get c => widget.controller;
 
   @override
@@ -727,7 +730,25 @@ class _LibraryPageState extends State<LibraryPage> {
           entry.meaning.toLowerCase().contains(q);
       return match && (!_onlyNotebook || c.isNotebook(entry.id));
     }).toList();
-    final visibleWords = words.take(_visibleWordCount).toList();
+    final sorted = [...words];
+    switch (_sortOrder) {
+      case 'alpha':
+        sorted.sort(
+          (a, b) => a.word.toLowerCase().compareTo(b.word.toLowerCase()),
+        );
+      case 'noted':
+        sorted.sort((a, b) {
+          final an =
+              c.isNotebook(a.id) ||
+              c.state.notes[a.id]?.trim().isNotEmpty == true;
+          final bn =
+              c.isNotebook(b.id) ||
+              c.state.notes[b.id]?.trim().isNotEmpty == true;
+          if (an != bn) return an ? -1 : 1;
+          return 0;
+        });
+    }
+    final visibleWords = sorted.take(_visibleWordCount).toList();
 
     return ContentShell(
       child: Column(
@@ -892,6 +913,20 @@ class _LibraryPageState extends State<LibraryPage> {
                         }),
                         child: const Text('返回全部词条'),
                       ),
+                    const SizedBox(width: 6),
+                    SegmentedButton<String>(
+                      key: const ValueKey('word-sort'),
+                      segments: const [
+                        ButtonSegment(value: 'book', label: Text('原序')),
+                        ButtonSegment(value: 'alpha', label: Text('字母')),
+                        ButtonSegment(value: 'noted', label: Text('有笔记优先')),
+                      ],
+                      selected: {_sortOrder},
+                      onSelectionChanged: (value) => setState(() {
+                        _sortOrder = value.first;
+                        _visibleWordCount = 60;
+                      }),
+                    ),
                   ],
                 ),
               ),
@@ -1302,7 +1337,8 @@ class _WordRow extends StatelessWidget {
     final theme = Theme.of(context);
     final card = controller.state.cards[entry.id];
     final note = controller.state.notes[entry.id]?.trim().isNotEmpty == true;
-    return Card(
+    return SurfaceCard(
+      padding: EdgeInsets.zero,
       child: InkWell(
         borderRadius: BorderRadius.circular(20),
         onTap: onTap,

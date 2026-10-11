@@ -785,6 +785,11 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       backgroundColor: surfaced ? Colors.transparent : null,
       elevation: surfaced ? 0 : null,
       height: floating ? 72 : null,
+      // A floating bar with a large radius shows an ugly oval behind the
+      // selected item, so the indicator is dropped there; the icon/label
+      // colour still marks the current page.
+      indicatorColor: floating ? Colors.transparent : null,
+      indicatorShape: floating ? const StadiumBorder() : null,
       selectedIndex: page,
       onDestinationSelected: _selectPage,
       destinations: const [
