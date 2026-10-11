@@ -18,7 +18,6 @@
 
 ![深色首页](docs/screenshots/home-dark.png)
 ![回忆验证](docs/screenshots/study-formal-unanswered.png)
-![可爱文案](docs/screenshots/home-cute.png)
 ![小窗](docs/screenshots/study-compact-quick.png)
 
 ## 词书与本地数据

@@ -191,9 +191,7 @@ void main() {
       await tester.tap(find.text('回忆验证'));
       await tester.pumpAndSettle();
       await tester.tap(
-        find.textContaining(
-          RegExp('开始新一轮|继续上次学习|开启一小轮|接着上次的小脚印'),
-        ),
+        find.textContaining(RegExp('开始新一轮|继续上次学习|开启一小轮|接着上次的小脚印')),
       );
       await tester.pumpAndSettle();
       expect(find.byType(StudyPage), findsOneWidget);
@@ -206,7 +204,6 @@ void main() {
       await controller.updateSettings(
         (settings) => settings.copyStyle = 'cute',
       );
-      await save('home-cute');
 
       await tester.tap(find.text('偏好设置'));
       await tester.pumpAndSettle();
@@ -214,7 +211,6 @@ void main() {
         tester.widget<SettingsPage>(find.byType(SettingsPage)).native,
         isFalse,
       );
-      await save('settings-cute');
 
       // Render the real compact StudyPage with the app's actual theme, without
       // invoking the native window resize method or implying an OS window.

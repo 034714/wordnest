@@ -80,7 +80,7 @@
     "test/data_test.dart": "0ccd0aa87ca5cf81f77c40fd73187517194e138829dc1c63950767dcd0d749da",
     "test/default_book_test.dart": "4c8fa833bb36ede8c470edd39d3b6980ae94d79d28bb8ffe8e89f93b72fd8da1",
     "test/exam_plan_test.dart": "9d7b80d9605e8203082dc9441bf7b1e531626bf5adc1940d141b0a729f6a0127",
-    "test/preview_screenshots_test.dart": "7b3115b934905d6d7db52598a879e91cd9743d64e5a4b98a5a4c6ec6b646fbc5",
+    "test/preview_screenshots_test.dart": "46494be6c834e2912e56921afdcce79037fae5c7299327a57c37025a99cf24ce",
     "test/reminder_test.dart": "a92e3ca99c2c0eee053948c3de073221ec4e2afea76be286f9ea58d8dae357ec",
     "test/responsive_test.dart": "5dec225fd4828bb4522ab913669848be9f5646e7948db960aabed85896a1bb2d",
     "test/safe_http_policy_test.dart": "5be20635c1548221aae8805c5597a072b1c59fc7f8640accd6c64d9a45ea10ad",
