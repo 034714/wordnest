@@ -1,3 +1,5 @@
+import 'dart:ui' show ImageFilter;
+
 import 'package:flutter/material.dart';
 
 import '../domain/controller.dart';
@@ -26,6 +28,9 @@ class AppCopy {
   String get typingWrong => cute ? '差一点点，再试一次吧。' : '拼写不正确，请重新输入后再检查。';
   String get showAnswer => cute ? '看一眼答案 · Tab' : '显示答案 · Tab';
   String get hideAnswer => cute ? '收好答案 · Tab' : '隐藏答案 · Tab';
+  String get addNotebook => cute ? '收进小本子' : '加入生词本';
+  String get inNotebook => cute ? '已经收好啦' : '已在生词本';
+  String get notebookAutoAdded => cute ? '答错了，先帮你收进小本子。' : '已加入生词本';
   String get typingHint => cute ? '在下面的输入框里敲出这个单词' : '在输入框中输入英文拼写';
   String get skipWord => cute ? '跳过去，看看下一个' : '跳过这个词';
   String get correct => cute ? '答对啦，收下一点进步。' : '回答正确。';
@@ -197,6 +202,72 @@ class PageHeading extends StatelessWidget {
   }
 }
 
+class AppearanceTheme extends ThemeExtension<AppearanceTheme> {
+  const AppearanceTheme({this.materialMode = 'solid', this.surfaceOpacity = 1});
+
+  final String materialMode;
+  final double surfaceOpacity;
+  bool get glass => materialMode == 'glass';
+
+  @override
+  AppearanceTheme copyWith({String? materialMode, double? surfaceOpacity}) =>
+      AppearanceTheme(
+        materialMode: materialMode ?? this.materialMode,
+        surfaceOpacity: surfaceOpacity ?? this.surfaceOpacity,
+      );
+
+  @override
+  AppearanceTheme lerp(covariant AppearanceTheme? other, double t) {
+    if (other == null) return this;
+    return AppearanceTheme(
+      materialMode: t < .5 ? materialMode : other.materialMode,
+      surfaceOpacity:
+          surfaceOpacity + (other.surfaceOpacity - surfaceOpacity) * t,
+    );
+  }
+}
+
+class SurfaceMaterial extends StatelessWidget {
+  const SurfaceMaterial({
+    super.key,
+    required this.child,
+    this.color,
+    this.borderRadius = const BorderRadius.all(Radius.circular(20)),
+    this.border,
+  });
+
+  final Widget child;
+  final Color? color;
+  final BorderRadius borderRadius;
+  final BorderSide? border;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final appearance =
+        theme.extension<AppearanceTheme>() ?? const AppearanceTheme();
+    final material = Material(
+      color: (color ?? theme.colorScheme.surface).withValues(
+        alpha: appearance.surfaceOpacity.clamp(.2, 1),
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: borderRadius,
+        side: border ?? BorderSide.none,
+      ),
+      child: child,
+    );
+    return ClipRRect(
+      borderRadius: borderRadius,
+      child: appearance.glass
+          ? BackdropFilter(
+              filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+              child: material,
+            )
+          : material,
+    );
+  }
+}
+
 class SurfaceCard extends StatelessWidget {
   const SurfaceCard({
     super.key,
@@ -211,9 +282,22 @@ class SurfaceCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Card(
-      color: color,
-      child: Padding(padding: padding, child: child),
+    final theme = Theme.of(context);
+    final appearance = theme.extension<AppearanceTheme>();
+    final content = Padding(padding: padding, child: child);
+    if (appearance == null ||
+        (!appearance.glass && appearance.surfaceOpacity == 1)) {
+      return Card(color: color, child: content);
+    }
+    final shape = theme.cardTheme.shape;
+    final rounded = shape is RoundedRectangleBorder ? shape : null;
+    return SurfaceMaterial(
+      color: color ?? theme.cardTheme.color,
+      borderRadius:
+          rounded?.borderRadius.resolve(Directionality.of(context)) ??
+          BorderRadius.circular(20),
+      border: rounded?.side,
+      child: content,
     );
   }
 }
@@ -453,6 +537,27 @@ Future<void> showWordDetails(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                // One-tap notebook toggle; notes stay optional and separate.
+                StatefulBuilder(
+                  builder: (context, setDialogState) {
+                    final saved = controller.isNotebook(entry.id);
+                    return Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        onPressed: () async {
+                          await controller.toggleNotebook(entry.id);
+                          if (context.mounted) setDialogState(() {});
+                        },
+                        icon: Icon(
+                          saved
+                              ? Icons.bookmark_added_rounded
+                              : Icons.bookmark_add_outlined,
+                        ),
+                        label: Text(saved ? '已在生词本' : '加入生词本'),
+                      ),
+                    );
+                  },
+                ),
                 if (entry.uk.trim().isNotEmpty || entry.us.trim().isNotEmpty)
                   Wrap(
                     spacing: 14,
@@ -487,7 +592,7 @@ Future<void> showWordDetails(
                   _DetailBlock(label: '近义词', value: entry.synonyms),
                 const SizedBox(height: 13),
                 Text(
-                  '我的笔记',
+                  '我的笔记（可选）',
                   style: theme.textTheme.labelLarge?.copyWith(
                     fontWeight: FontWeight.w700,
                   ),
@@ -498,7 +603,7 @@ Future<void> showWordDetails(
                   minLines: 2,
                   maxLines: 5,
                   decoration: const InputDecoration(
-                    hintText: '写下自己的联想、易错点或例句…',
+                    hintText: '不写也可以；写下的内容只保存在本机。',
                   ),
                 ),
               ],

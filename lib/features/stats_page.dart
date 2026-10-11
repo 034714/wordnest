@@ -4,14 +4,39 @@ import '../domain/controller.dart';
 import '../domain/models.dart';
 import 'shared_widgets.dart';
 
-class StatsPage extends StatelessWidget {
+/// 学习记录页：统计卡片 + 错题清单 + 按天分组、可继续加载的活动记录。
+///
+/// 「错题」数据来自并行落地的 `AppController.wrongFormalEvents({int? limit})`。
+/// 这里用 [_wrongFormalEvents] 做防御式读取：契约缺失时退回本地事件推导，
+/// 页面不会因为方法尚未落地而报错。
+class StatsPage extends StatefulWidget {
   const StatsPage({super.key, required this.controller});
 
   final AppController controller;
 
   @override
+  State<StatsPage> createState() => _StatsPageState();
+}
+
+class _StatsPageState extends State<StatsPage> {
+  /// null = all days; otherwise a yyyy-MM-dd key for one local day.
+  String? _dayFilter;
+
+  String _dayKey(DateTime local) =>
+      '${local.year}-${local.month.toString().padLeft(2, '0')}-'
+      '${local.day.toString().padLeft(2, '0')}';
+
+  static const _pageSize = 50;
+  static const _wrongPreviewLimit = 10;
+
+  int _visibleEvents = _pageSize;
+
+  AppController get c => widget.controller;
+
+  void _loadMoreActivities() => setState(() => _visibleEvents += _pageSize);
+
+  @override
   Widget build(BuildContext context) {
-    final c = controller;
     final formal = c.state.events
         .where((event) => event.kind == 'formal')
         .toList();
@@ -38,6 +63,7 @@ class StatsPage extends StatelessWidget {
       (max, item) => item.total > max ? item.total : max,
     );
     final recent = [...c.state.events]..sort((a, b) => b.at.compareTo(a.at));
+    final wrong = _wrongFormalEvents(c);
 
     return ContentShell(
       child: Column(
@@ -154,6 +180,8 @@ class StatsPage extends StatelessWidget {
               );
             },
           ),
+          const SizedBox(height: 18),
+          _wrongCard(context, wrong),
           const SizedBox(height: 18),
           _recentCard(context, recent),
         ],
@@ -388,7 +416,7 @@ class StatsPage extends StatelessWidget {
           ),
           const SizedBox(height: 15),
           Text(
-            '今日轻量过词 ${controller.seenToday} 个；其中看过只会记录熟悉度，不会提高正式正确率。',
+            '今日轻量过词 ${c.seenToday} 个；其中看过只会记录熟悉度，不会提高正式正确率。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
               height: 1.5,
@@ -401,19 +429,19 @@ class StatsPage extends StatelessWidget {
 
   Widget _libraryProgressCard(BuildContext context) {
     final theme = Theme.of(context);
-    final words = controller.words;
+    final words = c.words;
     final total = words.length;
     final learned = words
-        .where((entry) => controller.state.cards[entry.id]?.seen == true)
+        .where((entry) => c.state.cards[entry.id]?.seen == true)
         .length;
-    final stable = controller.stable;
+    final stable = c.stable;
     return SurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SectionTitle(
             title: '当前词书',
-            subtitle: controller.book?.title ?? '还没有选中的词书。',
+            subtitle: c.book?.title ?? '还没有选中的词书。',
             icon: Icons.auto_stories_outlined,
           ),
           const SizedBox(height: 8),
@@ -446,62 +474,230 @@ class StatsPage extends StatelessWidget {
     );
   }
 
+  /// 错题：最近答错的正式题，点一下打开词条详情。
+  Widget _wrongCard(BuildContext context, List<LearningEvent> wrong) {
+    final theme = Theme.of(context);
+    final visible = wrong.take(_wrongPreviewLimit).toList();
+    return SurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SectionTitle(
+            title: '错题',
+            subtitle: '最近答错的正式题，点一下可以查看词条详情。',
+            icon: Icons.report_gmailerrorred_rounded,
+          ),
+          const SizedBox(height: 4),
+          if (visible.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 24),
+              child: Center(child: Text('还没有答错的正式题；继续保持。')),
+            )
+          else ...[
+            for (final event in visible)
+              _wrongTile(context, theme, event, c.state.entries[event.entryId]),
+            if (wrong.length > visible.length)
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
+                child: Text(
+                  '共 ${wrong.length} 条错题，这里先显示最近 ${visible.length} 条；完整记录在下面的活动列表里。',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _wrongTile(
+    BuildContext context,
+    ThemeData theme,
+    LearningEvent event,
+    WordEntry? entry,
+  ) {
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      onTap: entry == null ? null : () => showWordDetails(context, c, entry),
+      leading: CircleAvatar(
+        radius: 17,
+        backgroundColor: theme.colorScheme.errorContainer.withValues(
+          alpha: .55,
+        ),
+        child: Icon(
+          Icons.close_rounded,
+          size: 17,
+          color: theme.colorScheme.error,
+        ),
+      ),
+      title: Text(
+        entry?.word ?? '已删除词条',
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      subtitle: Text('你答错的时间：${_momentLabel(event.at)}'),
+      trailing: const Icon(Icons.chevron_right_rounded),
+    );
+  }
+
+  /// 最近活动：全部学习事件按天分组，每页 50 条，可继续加载。
   Widget _recentCard(BuildContext context, List<LearningEvent> recent) {
     final theme = Theme.of(context);
+    final allDays = <String>{for (final e in recent) _dayKey(e.at.toLocal())};
+    final filtered = _dayFilter == null
+        ? recent
+        : recent.where((e) => _dayKey(e.at.toLocal()) == _dayFilter).toList();
+    final visible = filtered.take(_visibleEvents).toList();
+    final days = <_ActivityDay>[];
+    for (final event in visible) {
+      final local = event.at.toLocal();
+      final day = DateTime(local.year, local.month, local.day);
+      if (days.isEmpty || days.last.day != day) days.add(_ActivityDay(day));
+      days.last.events.add(event);
+    }
+    final remaining = filtered.length - visible.length;
     return SurfaceCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           SectionTitle(
             title: '最近活动',
-            subtitle: '从最新的本地学习事件中读取。',
+            subtitle: '全部学习事件按天分组；每页加载 $_pageSize 条，也可以直接选某一天。',
             icon: Icons.history_rounded,
           ),
-          const SizedBox(height: 4),
-          if (recent.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 24),
-              child: Center(child: Text('完成一次浏览或答题后，这里会留下记录。')),
+          const SizedBox(height: 8),
+          // Direct day picker for older records, newest day first.
+          Wrap(
+            key: const ValueKey('activity-day-filter'),
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              ChoiceChip(
+                label: const Text('全部'),
+                selected: _dayFilter == null,
+                onSelected: (_) => setState(() {
+                  _dayFilter = null;
+                  _visibleEvents = _pageSize;
+                }),
+              ),
+              for (final day in allDays.take(14))
+                ChoiceChip(
+                  label: Text(day),
+                  selected: _dayFilter == day,
+                  onSelected: (_) => setState(() {
+                    _dayFilter = day;
+                    _visibleEvents = _pageSize;
+                  }),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (visible.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 24),
+              child: Center(
+                child: Text(
+                  _dayFilter == null ? '完成一次浏览或答题后，这里会留下记录。' : '这一天没有学习记录。',
+                ),
+              ),
             )
-          else
-            ...recent.take(8).map((event) {
-              final entry = controller.state.entries[event.entryId];
-              final label = switch (event.kind) {
-                'formal' => event.correct == true ? '正式答题 · 正确' : '正式答题 · 再复习',
-                'self' =>
-                  _actionName(event) == 'pass' ? '自我判断 · 稍后再看' : '自我判断 · 记住了',
-                'view' => '轻量浏览',
-                _ => event.kind,
-              };
-              return ListTile(
-                contentPadding: EdgeInsets.zero,
-                dense: true,
-                leading: CircleAvatar(
-                  radius: 17,
-                  backgroundColor: theme.colorScheme.primaryContainer
-                      .withValues(alpha: .55),
-                  child: Icon(
-                    event.kind == 'formal'
-                        ? Icons.task_alt_rounded
-                        : Icons.visibility_outlined,
-                    size: 17,
-                    color: theme.colorScheme.primary,
-                  ),
+          else ...[
+            for (final (index, group) in days.indexed) ...[
+              if (index > 0) const SizedBox(height: 6),
+              _dayHeader(theme, group),
+              for (final event in group.events) _activityTile(theme, event),
+            ],
+            const SizedBox(height: 10),
+            if (remaining > 0)
+              Align(
+                alignment: Alignment.center,
+                child: OutlinedButton.icon(
+                  key: const ValueKey('activity-load-more'),
+                  onPressed: _loadMoreActivities,
+                  icon: const Icon(Icons.expand_more_rounded),
+                  label: Text('加载更多（剩余 $remaining）'),
                 ),
-                title: Text(
-                  entry?.word ?? '已删除词条',
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+              )
+            else if (filtered.length > _pageSize)
+              Text(
+                '已经显示全部 ${filtered.length} 条活动记录。',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
-                subtitle: Text(label),
-                trailing: Text(
-                  _timeLabel(event.at),
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              );
-            }),
+              ),
+          ],
         ],
+      ),
+    );
+  }
+
+  Widget _dayHeader(ThemeData theme, _ActivityDay group) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10, bottom: 2),
+      child: Row(
+        children: [
+          Text(
+            _dayLabel(group.day),
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Divider(
+              height: 1,
+              color: theme.dividerColor.withValues(alpha: .5),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            '${group.events.length} 条',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _activityTile(ThemeData theme, LearningEvent event) {
+    final entry = c.state.entries[event.entryId];
+    final label = switch (event.kind) {
+      'formal' => event.correct == true ? '正式答题 · 正确' : '正式答题 · 再复习',
+      'self' => _actionName(event) == 'pass' ? '自我判断 · 稍后再看' : '自我判断 · 记住了',
+      'view' => '轻量浏览',
+      _ => event.kind,
+    };
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      dense: true,
+      leading: CircleAvatar(
+        radius: 17,
+        backgroundColor: theme.colorScheme.primaryContainer.withValues(
+          alpha: .55,
+        ),
+        child: Icon(
+          event.kind == 'formal'
+              ? Icons.task_alt_rounded
+              : Icons.visibility_outlined,
+          size: 17,
+          color: theme.colorScheme.primary,
+        ),
+      ),
+      title: Text(
+        entry?.word ?? '已删除词条',
+        style: const TextStyle(fontWeight: FontWeight.w700),
+      ),
+      subtitle: Text(label),
+      trailing: Text(
+        _clockLabel(event.at),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
       ),
     );
   }
@@ -572,16 +768,63 @@ class StatsPage extends StatelessWidget {
     ];
   }
 
-  String _timeLabel(DateTime date) {
-    final local = date.toLocal();
+  String _dayLabel(DateTime day) {
     final now = DateTime.now();
-    if (local.year == now.year &&
-        local.month == now.month &&
-        local.day == now.day) {
-      return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-    }
-    return '${local.month}/${local.day}';
+    final today = DateTime(now.year, now.month, now.day);
+    final diff = today.difference(day).inDays;
+    if (diff == 0) return '今天';
+    if (diff == 1) return '昨天';
+    return '${day.year} 年 ${day.month} 月 ${day.day} 日';
   }
+
+  /// 同一天内只显示时刻。
+  String _clockLabel(DateTime date) {
+    final local = date.toLocal();
+    return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// 错题时间：带上「今天/昨天/日期」，因为错题清单不按天分组。
+  String _momentLabel(DateTime date) {
+    final local = date.toLocal();
+    final day = DateTime(local.year, local.month, local.day);
+    return '${_dayLabel(day)} ${_clockLabel(date)}';
+  }
+}
+
+/// 防御式读取 `AppController.wrongFormalEvents({int? limit})`。
+/// 方法未落地（或签名不同）时退回本地事件推导：正式题且答错，按时间倒序。
+List<LearningEvent> _wrongFormalEvents(AppController controller, {int? limit}) {
+  final dynamic target = controller;
+  try {
+    final Object? fn = target.wrongFormalEvents;
+    if (fn is Function) {
+      Object? raw;
+      try {
+        raw = Function.apply(fn, const [], {#limit: limit});
+      } catch (_) {
+        raw = Function.apply(fn, const []);
+      }
+      if (raw is Iterable) {
+        final events = raw.whereType<LearningEvent>().toList()
+          ..sort((a, b) => b.at.compareTo(a.at));
+        return limit == null ? events : events.take(limit).toList();
+      }
+    }
+  } catch (_) {
+    // Fall through to the local derivation below.
+  }
+  final events =
+      controller.state.events
+          .where((event) => event.kind == 'formal' && event.correct == false)
+          .toList()
+        ..sort((a, b) => b.at.compareTo(a.at));
+  return limit == null ? events : events.take(limit).toList();
+}
+
+class _ActivityDay {
+  _ActivityDay(this.day);
+  final DateTime day;
+  final List<LearningEvent> events = [];
 }
 
 class _DayStats {

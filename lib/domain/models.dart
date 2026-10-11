@@ -169,6 +169,16 @@ class LearningEvent {
   );
 }
 
+bool isValidBackgroundAsset(String value) =>
+    value.isEmpty ||
+    RegExp(r'^bg-[0-9a-f]{32}\.(png|jpg|webp)$').stringMatch(value) == value;
+
+int? parseAccentHex(String value) {
+  final hex = value.trim().replaceFirst(RegExp(r'^#'), '');
+  if (!RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(hex)) return null;
+  return 0xff000000 | int.parse(hex, radix: 16);
+}
+
 class AppSettings {
   AppSettings({
     this.activeBookId = '',
@@ -206,8 +216,23 @@ class AppSettings {
     this.learningOrder = 'book',
     this.copyStyle = 'plain',
     this.errorMinutes = 10,
+    this.accentArgb = 0xff23775d,
+    this.backgroundAsset = '',
+    this.materialMode = 'solid',
+    this.backgroundOpacity = 1,
+    this.surfaceOpacity = 1,
+    this.navigationStyle = 'adaptive',
+    this.navigationInset = 12,
+    this.navigationRadius = 24,
+    this.notebookAutoAddErrors = true,
+    this.notebookRemoveAfterCorrect = 2,
+    this.questionDirection = 'en2zh',
   });
   String activeBookId, theme, globalHotkey, examDate, learningOrder, copyStyle;
+  String backgroundAsset, materialMode, navigationStyle, questionDirection;
+  int accentArgb;
+  double backgroundOpacity, surfaceOpacity;
+  int navigationInset, navigationRadius;
   int roundSize,
       dailyNew,
       dailyLimit,
@@ -217,7 +242,8 @@ class AppSettings {
       startHour,
       endHour,
       widgetSeconds,
-      errorMinutes;
+      errorMinutes,
+      notebookRemoveAfterCorrect;
   bool adaptive,
       showChinese,
       showPhonetic,
@@ -235,7 +261,8 @@ class AppSettings {
       tts,
       autoTts,
       typingReveal,
-      hotkeyEnabled;
+      hotkeyEnabled,
+      notebookAutoAddErrors;
   double fontScale;
   Map<String, dynamic> toJson() => {
     'activeBookId': activeBookId,
@@ -273,6 +300,17 @@ class AppSettings {
     'learningOrder': learningOrder,
     'copyStyle': copyStyle,
     'errorMinutes': errorMinutes,
+    'accentArgb': accentArgb,
+    'backgroundAsset': backgroundAsset,
+    'materialMode': materialMode,
+    'backgroundOpacity': backgroundOpacity,
+    'surfaceOpacity': surfaceOpacity,
+    'navigationStyle': navigationStyle,
+    'navigationInset': navigationInset,
+    'navigationRadius': navigationRadius,
+    'notebookAutoAddErrors': notebookAutoAddErrors,
+    'notebookRemoveAfterCorrect': notebookRemoveAfterCorrect,
+    'questionDirection': questionDirection,
   };
   factory AppSettings.fromJson(Map<String, dynamic> j) {
     final s = AppSettings();
@@ -313,6 +351,18 @@ class AppSettings {
       learningOrder: d['learningOrder'] as String,
       copyStyle: d['copyStyle'] as String,
       errorMinutes: (d['errorMinutes'] as int).clamp(1, 60),
+      accentArgb: d['accentArgb'] as int,
+      backgroundAsset: d['backgroundAsset'] as String,
+      materialMode: d['materialMode'] as String,
+      backgroundOpacity: (d['backgroundOpacity'] as num).toDouble(),
+      surfaceOpacity: (d['surfaceOpacity'] as num).toDouble(),
+      navigationStyle: d['navigationStyle'] as String,
+      navigationInset: (d['navigationInset'] as num).toInt(),
+      navigationRadius: (d['navigationRadius'] as num).toInt(),
+      notebookAutoAddErrors: d['notebookAutoAddErrors'] as bool,
+      notebookRemoveAfterCorrect: (d['notebookRemoveAfterCorrect'] as int)
+          .clamp(0, 10),
+      questionDirection: d['questionDirection'] as String,
     );
   }
 }
@@ -324,6 +374,8 @@ class AppSnapshot {
     Map<String, ReviewCard>? cards,
     List<LearningEvent>? events,
     Map<String, String>? notes,
+    Set<String>? notebook,
+    Map<String, int>? notebookProgress,
     AppSettings? settings,
     Map<String, dynamic>? session,
     Map<String, Map<String, dynamic>>? sessions,
@@ -333,6 +385,8 @@ class AppSnapshot {
        cards = cards ?? {},
        events = events ?? [],
        notes = notes ?? {},
+       notebook = notebook ?? <String>{},
+       notebookProgress = notebookProgress ?? <String, int>{},
        settings = settings ?? AppSettings(),
        sessions = sessions ?? _legacySessions(session),
        activeSessionMode =
@@ -343,6 +397,10 @@ class AppSnapshot {
   final Map<String, ReviewCard> cards;
   final List<LearningEvent> events;
   final Map<String, String> notes;
+
+  /// 生词本成员；[notebookProgress] 记录每个成员的正式答对连续次数。
+  Set<String> notebook;
+  Map<String, int> notebookProgress;
   AppSettings settings;
 
   /// One resumable session per study mode (`quick`, `formal`, `typing`).
@@ -362,6 +420,11 @@ class AppSnapshot {
     'cards': cards.values.map((c) => c.toJson()).toList(),
     'events': events.map((e) => e.toJson()).toList(),
     'notes': notes,
+    'notebook': (notebook.toList()..sort()),
+    'notebookProgress': {
+      for (final id in (notebookProgress.keys.toList()..sort()))
+        id: notebookProgress[id]!,
+    },
     'settings': settings.toJson(),
     'session': sessions[activeSessionMode] ?? <String, dynamic>{},
     'sessions': sessions,
@@ -387,6 +450,15 @@ class AppSnapshot {
         .map((e) => LearningEvent.fromJson(Map<String, dynamic>.from(e as Map)))
         .toList(),
     notes: Map<String, String>.from(j['notes'] as Map),
+    notebook: j['notebook'] is List
+        ? (j['notebook'] as List).cast<String>().toSet()
+        : <String>{},
+    notebookProgress: j['notebookProgress'] is Map
+        ? {
+            for (final e in (j['notebookProgress'] as Map).entries)
+              '${e.key}': e.value as int,
+          }
+        : <String, int>{},
     settings: AppSettings.fromJson(
       Map<String, dynamic>.from(j['settings'] as Map),
     ),
@@ -407,6 +479,8 @@ class AppSnapshot {
     cards: {...cards},
     events: [...events],
     notes: {...notes},
+    notebook: {...notebook},
+    notebookProgress: {...notebookProgress},
     settings: AppSettings.fromJson(settings.toJson()),
     sessions: {
       for (final e in sessions.entries)

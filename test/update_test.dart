@@ -525,7 +525,8 @@ void main() {
     expect(isFakeIpAddress(InternetAddress('198.19.255.1')), isTrue);
     expect(isFakeIpAddress(InternetAddress('8.8.8.8')), isFalse);
     expect(isFakeIpAddress(InternetAddress('127.0.0.1')), isFalse);
-    expect(isFakeIpAddress(InternetAddress('fc00::1')), isTrue);
+    // ULA is genuinely private, not a proxy fake-ip pool: fail closed.
+    expect(isFakeIpAddress(InternetAddress('fc00::1')), isFalse);
   });
 
   test('fake-ip DNS with system proxy succeeds through proxy path', () async {

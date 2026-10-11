@@ -4,6 +4,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../data/default_book.dart';
 import '../data/importer.dart';
 import '../data/offline_dictionary.dart';
 import '../data/storage.dart';
@@ -27,7 +28,7 @@ class _LibraryPageState extends State<LibraryPage> {
   String _query = '';
   bool _busy = false;
   int _visibleWordCount = 60;
-  bool _onlyNotes = false;
+  bool _onlyNotebook = false;
 
   AppController get c => widget.controller;
 
@@ -236,184 +237,56 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  // Local built-in sources for the 内置词库 dialog. A future online catalog
-  // can append entries to this list without changing the dialog flow.
   Future<List<({String asset, String label, String detail, IconData icon})>>
   _builtInBooks() async {
     final items =
         <({String asset, String label, String detail, IconData icon})>[
           (
-            asset: 'demo.json',
-            label: '自编演示 24 词',
-            detail: '了解完整学习流程',
-            icon: Icons.auto_awesome_outlined,
+            asset: 'cet4-kylebing.txt',
+            label: licensedBookTitle,
+            detail: '4543 独立词 · 7508 原始位置 · 1 单元 · BSD-3-Clause',
+            icon: Icons.school_rounded,
           ),
         ];
-    // The personal build ships this file; the public source export does not.
-    try {
-      await rootBundle.load('assets/demo.json');
-      items.add((
-        asset: 'demo.json',
-        label: '内置演示词书',
-        detail: '自编 24 词内容',
-        icon: Icons.menu_book_rounded,
-      ));
-    } catch (_) {}
     return items;
   }
 
   Future<void> _showBuiltInBooks() async {
     final items = await _builtInBooks();
-    if (!mounted) return;
     final catalog = CatalogService();
-    var online = <CatalogBook>[];
+    List<CatalogBook> online;
     try {
       online = await catalog.list();
-    } catch (_) {}
+    } on CatalogError catch (error) {
+      _message(error.message);
+      online = const [];
+    }
     if (!mounted) return;
-    String? downloading;
     final choice = await showDialog<Object>(
       context: context,
-      builder: (dialogContext) => StatefulBuilder(
-        builder: (context, setDialogState) => AlertDialog(
-          title: const Text('内置词库'),
-          content: SizedBox(
-            width: 560,
-            child: SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    '随包词书（离线可用）',
-                    style: Theme.of(context).textTheme.titleSmall
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                  for (final item in items)
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      leading: CircleAvatar(
-                        backgroundColor: Theme.of(context)
-                            .colorScheme
-                            .primaryContainer,
-                        child: Icon(
-                          item.icon,
-                          size: 20,
-                          color: Theme.of(context).colorScheme.primary,
-                        ),
-                      ),
-                      title: Text(item.label),
-                      subtitle: Text(item.detail),
-                      onTap: downloading == null
-                          ? () => Navigator.pop(dialogContext, item)
-                          : null,
-                    ),
-                  if (online.isNotEmpty) ...[
-                    const Divider(height: 22),
-                    Text(
-                      '在线词库（需要网络，下载后预览再导入）',
-                      style: Theme.of(context).textTheme.titleSmall
-                          ?.copyWith(fontWeight: FontWeight.w700),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '只收录已核对许可证的公开来源，每本都显示来源署名。',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    for (final book in online)
-                      ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        leading: CircleAvatar(
-                          backgroundColor: Theme.of(context)
-                              .colorScheme
-                              .secondaryContainer,
-                          child: Icon(
-                            book.id.startsWith('kylebing')
-                                ? Icons.auto_stories_rounded
-                                : Icons.abc_rounded,
-                            size: 20,
-                            color: Theme.of(context).colorScheme.secondary,
-                          ),
-                        ),
-                        title: Text(book.title),
-                        subtitle: Padding(
-                          padding: const EdgeInsets.only(top: 3),
-                          child: Text(
-                            '${book.description}\n${book.attribution}',
-                            style: Theme.of(context).textTheme.bodySmall
-                                ?.copyWith(height: 1.4),
-                          ),
-                        ),
-                        isThreeLine: true,
-                        trailing: downloading == book.id
-                            ? const SizedBox(
-                                width: 22,
-                                height: 22,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2.4,
-                                ),
-                              )
-                            : TextButton(
-                                onPressed: downloading == null
-                                    ? () async {
-                                        setDialogState(
-                                          () => downloading = book.id,
-                                        );
-                                        try {
-                                          final download = await catalog.fetch(
-                                            book,
-                                          );
-                                          if (dialogContext.mounted) {
-                                            Navigator.pop(
-                                              dialogContext,
-                                              download,
-                                            );
-                                          }
-                                        } on CatalogError catch (error) {
-                                          if (dialogContext.mounted) {
-                                            setDialogState(
-                                              () => downloading = null,
-                                            );
-                                          }
-                                          _message(error.message);
-                                        } catch (error) {
-                                          if (dialogContext.mounted) {
-                                            setDialogState(
-                                              () => downloading = null,
-                                            );
-                                          }
-                                          _message('在线词库下载失败：$error');
-                                        }
-                                      }
-                                    : null,
-                                child: const Text('下载'),
-                              ),
-                      ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('关闭'),
-            ),
-          ],
-        ),
-      ),
+      builder: (_) =>
+          _CatalogPicker(localBooks: items, books: online, catalog: catalog),
     );
-    if (choice == null) return;
+    if (!mounted || choice == null) return;
     if (choice is CatalogDownload) {
-      await _previewText(choice.text, choice.filename);
-      return;
-    }
-    if (choice is ({String asset, String label})) {
+      await _previewText(
+        choice.text,
+        choice.filename,
+        title: choice.book.title,
+        source: choice.book.attribution,
+      );
+    } else if (choice
+        is ({String asset, String label, String detail, IconData icon})) {
       try {
         final text = await rootBundle.loadString('assets/${choice.asset}');
-        await _previewText(text, choice.asset);
+        await _previewText(
+          text,
+          choice.asset,
+          title: choice.label,
+          source: choice.asset == 'cet4-kylebing.txt'
+              ? licensedBookAttribution
+              : null,
+        );
       } catch (error) {
         _message('内置词库暂时不可用：$error');
       }
@@ -424,10 +297,18 @@ class _LibraryPageState extends State<LibraryPage> {
     String text,
     String filename, {
     Map<String, int>? csvMapping,
+    String? title,
+    String? source,
   }) async {
     setState(() => _busy = true);
     try {
-      var preview = ImportParser.parse(text, filename, csvMapping: csvMapping);
+      var preview = ImportParser.parse(
+        text,
+        filename,
+        csvMapping: csvMapping,
+        title: title,
+        source: source,
+      );
       preview = await OfflineDictionary.enrich(preview);
       if (!mounted) return;
       await _showImportPreview(preview, filename);
@@ -695,10 +576,10 @@ class _LibraryPageState extends State<LibraryPage> {
     }
   }
 
-  Future<void> _exportCsv() async {
-    final entries = c.words;
+  Future<void> _exportCsv({bool notebookOnly = false}) async {
+    final entries = notebookOnly ? c.notebookEntries : c.words;
     if (entries.isEmpty) {
-      _message('当前词书还没有词条。');
+      _message(notebookOnly ? '生词本还是空的。' : '当前词书还没有词条。');
       return;
     }
     final rows = <List<String>>[
@@ -734,11 +615,97 @@ class _LibraryPageState extends State<LibraryPage> {
     final csv = rows.map((row) => row.map(_csvCell).join(',')).join('\r\n');
     try {
       final path = await FilePicker.platform.saveFile(
-        dialogTitle: '导出当前词书为 CSV',
-        fileName: '${c.book?.title ?? 'wordnest'}-entries.csv',
+        dialogTitle: notebookOnly ? '导出生词本为 CSV' : '导出当前词书为 CSV',
+        fileName:
+            '${notebookOnly ? '${c.book?.title ?? 'wordnest'}-生词本' : '${c.book?.title ?? 'wordnest'}-entries'}.csv',
         bytes: Uint8List.fromList(utf8.encode(csv)),
       );
-      if (path != null) _message('CSV 已保存，包含 ${entries.length} 个词条。');
+      if (path != null) {
+        _message(
+          notebookOnly
+              ? '生词本已导出，共 ${entries.length} 个词，可直接当词书再导入。'
+              : 'CSV 已保存，包含 ${entries.length} 个词条。',
+        );
+      }
+    } catch (error) {
+      _message('导出 CSV 失败：$error');
+    }
+  }
+
+  /// Export one specific book (used by each book card menu).
+  Future<void> _exportBookCsv(WordBook book) async {
+    final entries = <WordEntry>[
+      for (final member in book.members)
+        if (c.state.entries[member.entryId] != null)
+          c.state.entries[member.entryId]!,
+    ];
+    await _writeCsv(
+      entries,
+      dialogTitle: '导出「${book.title}」为 CSV',
+      fileName: '${book.title}-entries.csv',
+    );
+  }
+
+  /// Export the notebook as its own standalone word-list file.
+  Future<void> _exportNotebookCsv() => _writeCsv(
+    c.notebookEntries,
+    dialogTitle: '导出生词本为 CSV',
+    fileName: '${c.book?.title ?? 'wordnest'}-生词本.csv',
+    emptyMessage: '生词本还是空的。',
+    successMessage: '生词本已导出，共 ${c.notebookEntries.length} 个词，可直接当词书再导入。',
+  );
+
+  Future<void> _writeCsv(
+    List<WordEntry> entries, {
+    required String dialogTitle,
+    required String fileName,
+    String? emptyMessage,
+    String? successMessage,
+  }) async {
+    if (entries.isEmpty) {
+      _message(emptyMessage ?? '没有可导出的词条。');
+      return;
+    }
+    final rows = <List<String>>[
+      [
+        'word',
+        'meaning',
+        'uk',
+        'us',
+        'example',
+        'exampleTranslation',
+        'explanation',
+        'usage',
+        'root',
+        'synonyms',
+        'note',
+      ],
+      ...entries.map(
+        (entry) => [
+          entry.word,
+          entry.meaning,
+          entry.uk,
+          entry.us,
+          entry.example,
+          entry.exampleTranslation,
+          entry.explanation,
+          entry.usage,
+          entry.root,
+          entry.synonyms,
+          c.state.notes[entry.id] ?? '',
+        ],
+      ),
+    ];
+    final csv = rows.map((row) => row.map(_csvCell).join(',')).join('\r\n');
+    try {
+      final path = await FilePicker.platform.saveFile(
+        dialogTitle: dialogTitle,
+        fileName: fileName,
+        bytes: Uint8List.fromList(utf8.encode(csv)),
+      );
+      if (path != null) {
+        _message(successMessage ?? 'CSV 已保存，包含 ${entries.length} 个词条。');
+      }
     } catch (error) {
       _message('导出 CSV 失败：$error');
     }
@@ -758,8 +725,7 @@ class _LibraryPageState extends State<LibraryPage> {
           q.isEmpty ||
           entry.word.toLowerCase().contains(q) ||
           entry.meaning.toLowerCase().contains(q);
-      return match &&
-          (!_onlyNotes || c.state.notes[entry.id]?.trim().isNotEmpty == true);
+      return match && (!_onlyNotebook || c.isNotebook(entry.id));
     }).toList();
     final visibleWords = words.take(_visibleWordCount).toList();
 
@@ -814,6 +780,7 @@ class _LibraryPageState extends State<LibraryPage> {
                       );
                     },
                     onDelete: () => _deleteBook(books[index]),
+                    onExport: () => _exportBookCsv(books[index]),
                   ),
                 );
               },
@@ -845,6 +812,11 @@ class _LibraryPageState extends State<LibraryPage> {
                     onPressed: _exportCsv,
                     icon: const Icon(Icons.table_view_rounded),
                     label: const Text('导出当前 CSV'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: _exportNotebookCsv,
+                    icon: const Icon(Icons.bookmark_added_outlined),
+                    label: const Text('导出生词本 CSV'),
                   ),
                   const Text('备份包含词书、笔记与学习记录；数据只保存在本机。'),
                 ],
@@ -891,37 +863,45 @@ class _LibraryPageState extends State<LibraryPage> {
                 },
               ),
               const SizedBox(height: 5),
+              // Filter row stays visible even when the filtered list is empty,
+              // so the notebook filter can always be switched back off.
+              Align(
+                alignment: Alignment.centerLeft,
+                child: Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    Text(
+                      '显示 ${visibleWords.length} / ${words.length} 个词条',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    ChoiceChip(
+                      label: Text('只看生词本（${c.state.notebook.length}）'),
+                      selected: _onlyNotebook,
+                      onSelected: (value) => setState(() {
+                        _onlyNotebook = value;
+                        _visibleWordCount = 60;
+                      }),
+                    ),
+                    if (_onlyNotebook)
+                      TextButton(
+                        onPressed: () => setState(() {
+                          _onlyNotebook = false;
+                          _visibleWordCount = 60;
+                        }),
+                        child: const Text('返回全部词条'),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 8),
               if (words.isEmpty)
                 const Padding(
                   padding: EdgeInsets.all(24),
                   child: Center(child: Text('没有匹配的词条。')),
                 )
               else ...[
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      Text(
-                        '显示 ${visibleWords.length} / ${words.length} 个词条',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
-                      ChoiceChip(
-                        label: Text(
-                          '只看生词本（${c.words.where((entry) => c.state.notes[entry.id]?.trim().isNotEmpty == true).length}）',
-                        ),
-                        selected: _onlyNotes,
-                        onSelected: (value) => setState(() {
-                          _onlyNotes = value;
-                          _visibleWordCount = 60;
-                        }),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 8),
                 ListView.separated(
                   shrinkWrap: true,
                   physics: const NeverScrollableScrollPhysics(),
@@ -960,6 +940,222 @@ class _LibraryPageState extends State<LibraryPage> {
   }
 }
 
+/// Searchable picker for bundled books and the pinned online catalog.
+/// Jimmy entries come from their original repository with an explicit
+/// unknown-redistribution notice; KyleBing entries carry a BSD-3-Clause
+/// attribution. Nothing is imported without the normal preview confirmation.
+class _CatalogPicker extends StatefulWidget {
+  const _CatalogPicker({
+    required this.localBooks,
+    required this.books,
+    required this.catalog,
+  });
+  final List<({String asset, String label, String detail, IconData icon})>
+  localBooks;
+  final List<CatalogBook> books;
+  final CatalogService catalog;
+  @override
+  State<_CatalogPicker> createState() => _CatalogPickerState();
+}
+
+class _CatalogPickerState extends State<_CatalogPicker> {
+  final _search = TextEditingController();
+  String _query = '';
+  String? _busyId;
+  String? _error;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  List<CatalogBook> get _matches {
+    final q = _query.trim().toLowerCase();
+    if (q.isEmpty) return widget.books;
+    return widget.books
+        .where(
+          (b) =>
+              b.title.toLowerCase().contains(q) ||
+              b.scene.toLowerCase().contains(q) ||
+              b.category.toLowerCase().contains(q) ||
+              b.source.toLowerCase().contains(q),
+        )
+        .toList();
+  }
+
+  Future<void> _download(CatalogBook book) async {
+    setState(() {
+      _busyId = book.id;
+      _error = null;
+    });
+    try {
+      final download = await widget.catalog.fetch(book);
+      if (!mounted) return;
+      Navigator.pop(context, download);
+    } on CatalogError catch (error) {
+      if (mounted) {
+        setState(() {
+          _busyId = null;
+          _error = '${book.title}：${error.message}';
+        });
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _busyId = null;
+          _error = '${book.title}：下载失败：$error';
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final matches = _matches;
+    return AlertDialog(
+      title: const Text('选择词书'),
+      content: SizedBox(
+        width: 620,
+        height: 560,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            TextField(
+              controller: _search,
+              onChanged: (value) => setState(() => _query = value),
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search_rounded),
+                hintText: '搜索词书名称、学段或来源',
+                isDense: true,
+              ),
+            ),
+            if (_busyId != null)
+              const Padding(
+                padding: EdgeInsets.only(top: 10),
+                child: LinearProgressIndicator(minHeight: 2),
+              ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(
+                  _error!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: ListView(
+                children: [
+                  for (final item in widget.localBooks)
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      leading: CircleAvatar(
+                        backgroundColor: theme.colorScheme.primaryContainer,
+                        child: Icon(
+                          item.icon,
+                          size: 20,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                      title: Text(item.label),
+                      subtitle: Text(item.detail),
+                      onTap: _busyId != null
+                          ? null
+                          : () => Navigator.pop(context, item),
+                    ),
+                  if (matches.isEmpty && _query.isNotEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 24),
+                      child: Center(child: Text('没有匹配的词书。')),
+                    ),
+                  if (_query.isEmpty) const Divider(height: 22),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Text(
+                      _query.isEmpty
+                          ? '在线词书（${matches.length} 本，按需下载）'
+                          : '搜索结果（${matches.length} 本）',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  for (final book in matches.take(80))
+                    _catalogTile(theme, book),
+                  if (matches.length > 80)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      child: Text(
+                        '还有 ${matches.length - 80} 本，输入关键词可以继续缩小范围。',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+  }
+
+  Widget _catalogTile(ThemeData theme, CatalogBook book) {
+    final known = book.redistributionKnown;
+    final details = [
+      if (book.scene.isNotEmpty) book.scene,
+      if (book.wordCount > 0) '${book.wordCount} 词',
+      if (book.chapterCount > 0) '${book.chapterCount} 单元',
+      book.source,
+    ].join(' · ');
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: CircleAvatar(
+        backgroundColor: theme.colorScheme.secondaryContainer,
+        child: Icon(
+          known ? Icons.auto_stories_rounded : Icons.public_rounded,
+          size: 20,
+          color: theme.colorScheme.secondary,
+        ),
+      ),
+      title: Text(book.title),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(details),
+          Text(
+            known ? book.attribution : '来自原始公开仓库，再分发许可未确认；仅供个人学习使用。',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: known
+                  ? theme.colorScheme.onSurfaceVariant
+                  : theme.colorScheme.tertiary,
+              height: 1.35,
+            ),
+          ),
+        ],
+      ),
+      isThreeLine: true,
+      trailing: _busyId == book.id
+          ? const SizedBox(
+              width: 22,
+              height: 22,
+              child: CircularProgressIndicator(strokeWidth: 2.4),
+            )
+          : const Icon(Icons.download_rounded),
+      onTap: _busyId != null ? null : () => _download(book),
+    );
+  }
+}
+
 class _PreviewChip extends StatelessWidget {
   const _PreviewChip({required this.label, required this.value});
   final String label;
@@ -984,12 +1180,14 @@ class _BookCard extends StatelessWidget {
     required this.controller,
     required this.onSelect,
     required this.onDelete,
+    required this.onExport,
   });
   final WordBook book;
   final bool active;
   final AppController controller;
   final Future<void> Function() onSelect;
   final VoidCallback onDelete;
+  final Future<void> Function() onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -1025,9 +1223,14 @@ class _BookCard extends StatelessWidget {
                 ),
               PopupMenuButton<String>(
                 onSelected: (value) {
-                  if (value == 'delete') onDelete();
+                  if (value == 'delete') {
+                    onDelete();
+                  } else if (value == 'export') {
+                    onExport();
+                  }
                 },
                 itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'export', child: Text('导出这本词书 CSV')),
                   PopupMenuItem(value: 'delete', child: Text('删除词书')),
                 ],
               ),

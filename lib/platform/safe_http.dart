@@ -5,10 +5,11 @@ import 'dart:io';
 ///
 /// Rules: http/https only with public DNS answers connected by numeric address
 /// (no second resolution, no DNS rebinding); HTTPS keeps the original URI host
-/// for certificate/SNI; no proxy unless local DNS is unusable (fake-ip) and a
-/// system proxy is advertised, in which case the proxy performs its own DNS;
-/// redirects are followed manually with per-hop hostname revalidation; strict
-/// body and time bounds. Nothing here downloads or executes installers.
+/// for certificate/SNI. Only exact trusted GitHub hosts may use a system proxy
+/// when DNS fails or every answer is in the IPv4 benchmark fake-ip range. Other
+/// non-public or mixed answers are rejected even with a proxy configured. The
+/// proxy resolves trusted targets itself; every redirect repeats URL and DNS
+/// validation. Strict body and time bounds; no installer downloads/execution.
 typedef AddressResolver = Future<List<InternetAddress>> Function(String host);
 
 typedef PinnedFetch = Future<FetchResponse> Function(
@@ -23,6 +24,16 @@ typedef ProxyProbe = Future<String?> Function(Uri uri);
 typedef ProxiedFetch = Future<FetchResponse> Function(Uri uri, String proxy);
 
 const Set<int> redirectStatusCodes = {301, 302, 303, 307, 308};
+
+// Only these exact public source hosts may delegate destination DNS to a proxy.
+// User-supplied update hosts and subdomains do not inherit this exception.
+const Set<String> _trustedProxyHosts = {
+  'raw.githubusercontent.com',
+  'github.com',
+  'release-assets.githubusercontent.com',
+  'objects.githubusercontent.com',
+  'api.github.com',
+};
 
 class FetchResponse {
   const FetchResponse(this.statusCode, this.body, {this.location});
@@ -122,15 +133,13 @@ bool isPublicAddress(InternetAddress address) {
       !(b[0] == 0x3f && b[1] == 0xff && (b[2] & 0xf0) == 0);
 }
 
-/// True for the virtual ranges proxy fake-ip DNS uses (benchmark 198.18.0.0/15
-/// and, for IPv6 fake-ip pools, ULA fc00::/7). Plain private/loopback answers
-/// are NOT fake-ip: they fail closed instead of falling back to a proxy.
+/// True only for IPv4 benchmark 198.18.0.0/15, used by proxy fake-ip DNS.
+/// IPv6 ULA is genuinely private, not a safe proxy-fallback signal. Benchmark
+/// literals are still rejected by [validatePublicHttpUrl]; DNS fake-ip alone
+/// never authorizes a proxy request to an untrusted host.
 bool isFakeIpAddress(InternetAddress address) {
   final b = address.rawAddress;
-  if (b.length == 4) {
-    return b[0] == 198 && (b[1] == 18 || b[1] == 19);
-  }
-  return b.length == 16 && (b[0] & 0xfe) == 0xfc;
+  return b.length == 4 && b[0] == 198 && (b[1] == 18 || b[1] == 19);
 }
 
 /// First usable PROXY directive of a PAC string; null when the result is
@@ -371,10 +380,11 @@ Future<FetchResponse> fetchPinned(
   }
 }
 
-/// Proxy fallback used only when local DNS answers are unusable (typical for
-/// proxy fake-ip setups). The proxy performs its own name resolution, so no
-/// pinning is possible or needed; hostname, redirect and size rules still
-/// apply and TLS identity is verified against the original hostname.
+/// Unpinned proxy transport; callers must authorize the target through
+/// [safeHttpGet] first. The proxy performs its own name resolution, which
+/// cannot be locally pinned or checked. TLS still verifies the original host;
+/// redirects are returned for per-hop policy checks. A loopback/private proxy
+/// endpoint is allowed as transport, never as the destination URL.
 Future<FetchResponse> fetchViaProxy(
   Uri uri, {
   required String proxy,
@@ -394,11 +404,12 @@ Future<FetchResponse> fetchViaProxy(
   }
 }
 
-/// Manual redirect loop with per-hop hostname validation, public-DNS pinning
-/// preferred, and a bounded body plus single overall deadline. HTTPS may not
-/// be downgraded. When local DNS yields no public answer (benchmark/private
-/// answers or resolution failure) a detected system proxy is used instead;
-/// without one, fake-ip environments get an explicit Chinese error.
+/// Manual redirect loop with per-hop URL/DNS validation, public-DNS pinning,
+/// a bounded body and a single overall deadline. HTTPS may not be downgraded.
+/// Proxy fallback is limited to [_trustedProxyHosts] after DNS failure/empty
+/// answers or all-benchmark IPv4 fake-ip answers. Every other non-public or
+/// mixed answer fails before proxy lookup. Trusted fake-ip without a system
+/// proxy reports explicit guidance instead of connecting to the virtual IP.
 Future<FetchResponse> safeHttpGet({
   required Uri uri,
   required AddressResolver resolver,
@@ -430,9 +441,9 @@ Future<FetchResponse> safeHttpGet({
       resolveStack = stack;
     }
     final allPublic = answers.isNotEmpty && answers.every(isPublicAddress);
-    final anyPublic = answers.any(isPublicAddress);
-    if (answers.isNotEmpty && anyPublic && !allPublic) {
-      throw const FormatException('DNS 解析包含非公共地址，已拒绝连接');
+    final allFakeIp = answers.isNotEmpty && answers.every(isFakeIpAddress);
+    if (answers.isNotEmpty && !allPublic && !allFakeIp) {
+      throw const FormatException('域名解析包含私有、保留或混合地址，已拒绝连接');
     }
 
     FetchResponse fetched;
@@ -446,14 +457,18 @@ Future<FetchResponse> safeHttpGet({
               maxBodyBytes: maxBodyBytes,
             );
     } else {
+      final host = current.host.toLowerCase().replaceFirst(RegExp(r'\.$'), '');
+      if (!_trustedProxyHosts.contains(host)) {
+        if (resolveError != null) {
+          Error.throwWithStackTrace(resolveError, resolveStack!);
+        }
+        throw const FormatException('未经公共 DNS 验证的域名不允许使用代理');
+      }
       final proxy = await (proxyProbe ?? defaultSystemProxy)(current)
           .timeout(remaining());
       if (proxy == null) {
-        if (answers.isNotEmpty) {
-          if (answers.every(isFakeIpAddress)) {
-            throw const FakeIpDnsException();
-          }
-          throw const FormatException('域名解析到私有、保留地址或没有有效地址');
+        if (allFakeIp) {
+          throw const FakeIpDnsException();
         }
         if (resolveError != null) {
           Error.throwWithStackTrace(resolveError, resolveStack!);

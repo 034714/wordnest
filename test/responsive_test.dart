@@ -60,6 +60,10 @@ void main() {
       action: 'remember',
     );
     await controller.review('word-3', kind: 'view', familiar: false);
+    // 让「最近活动」超过一页（每页 50 条），验证「加载更多」分页。
+    for (var index = 0; index < 56; index++) {
+      await controller.review('word-${index % 24}', kind: 'view');
+    }
     return controller;
   }
 
@@ -80,7 +84,7 @@ void main() {
     try {
       await showPage();
       await tester.pumpAndSettle();
-      for (var attempt = 0; attempt < 12; attempt++) {
+      for (var attempt = 0; attempt < 20; attempt++) {
         final scrollable = find.byType(Scrollable);
         if (!tester.any(scrollable)) break;
         await tester.drag(scrollable.first, const Offset(0, -720));
@@ -151,11 +155,49 @@ void main() {
         tester.widget<SettingsPage>(find.byType(SettingsPage)).native,
         isFalse,
       );
+      // 新的功能分区：学习 / 生词本 / 提醒 / 外观 / 数据与关于。
+      expect(find.text('学习'), findsWidgets); // 底部导航也复用「学习」二字
+      expect(find.text('生词本'), findsOneWidget);
+      expect(find.text('提醒'), findsOneWidget);
+      expect(find.text('外观'), findsOneWidget);
+      expect(find.text('数据与关于'), findsOneWidget);
+      expect(find.text('当前概览'), findsOneWidget);
+      // 分区内的关键控件保持可达。
+      expect(find.text('每轮词数'), findsOneWidget);
+      expect(find.text('题型方向'), findsOneWidget);
+      expect(find.text('答错自动加入'), findsOneWidget);
+      expect(find.text('答对几次后自动移除'), findsOneWidget);
+      expect(find.text('打开生词本'), findsOneWidget);
+      expect(find.text('悬浮底栏'), findsOneWidget);
+      expect(find.text('发送测试通知'), findsOneWidget);
+      // native:false 时不渲染桌面分区。
+      expect(find.text('桌面'), findsNothing);
+      // 已移除的旧控件：提醒间隔/时间段/中文、日历导出都不再出现。
+      expect(find.text('提醒间隔'), findsNothing);
+      expect(find.text('提醒时间段'), findsNothing);
+      expect(find.text('提醒中显示中文'), findsNothing);
+      expect(find.text('复习日历'), findsNothing);
+      expect(find.text('导出复习日历'), findsNothing);
     });
     expect(
       errors.map((error) => error.toString()),
       isEmpty,
       reason: '设置页面产生了 Flutter 异常。',
+    );
+  });
+
+  test('提醒分区只在非 Android 平台显示（native:false 测试环境保留最小实验块）', () {
+    expect(
+      SettingsPage.showReminderSection(native: true, android: true),
+      isFalse,
+    );
+    expect(
+      SettingsPage.showReminderSection(native: true, android: false),
+      isTrue,
+    );
+    expect(
+      SettingsPage.showReminderSection(native: false, android: false),
+      isTrue,
     );
   });
 
@@ -169,12 +211,27 @@ void main() {
       await tester.tap(find.text('记录').last);
       await tester.pumpAndSettle();
       expect(find.byType(StatsPage), findsOneWidget);
+      expect(find.text('错题'), findsOneWidget);
+      expect(find.text('最近活动'), findsOneWidget);
+      // 活动按天分组：同一天的表头（复习分布里也可能出现「今天」）。
+      expect(find.text('今天'), findsWidgets);
+      expect(find.text('word1'), findsWidgets); // 答错的词出现在错题清单里
     });
     expect(
       errors.map((error) => error.toString()),
       isEmpty,
       reason: '记录页面产生了 Flutter 异常。',
     );
+
+    // 活动列表按 50 条一页懒加载：还有剩余时必须能继续展开。
+    final loadMore = find.byKey(const ValueKey('activity-load-more'));
+    expect(loadMore, findsOneWidget);
+    await tester.ensureVisible(loadMore);
+    await tester.pumpAndSettle();
+    await tester.tap(loadMore);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('activity-load-more')), findsNothing);
+    expect(controller.state.events.length, greaterThan(50));
   });
 
   testWidgets('Study typing 在 390x844、1.3 倍字号下可滚动到底部', (tester) async {

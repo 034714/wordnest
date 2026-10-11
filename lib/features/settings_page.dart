@@ -2,9 +2,17 @@ import 'package:flutter/material.dart';
 
 import '../domain/controller.dart';
 import '../domain/models.dart';
+import '../platform/appearance_service.dart';
 import '../platform/desktop_service.dart';
+import 'library_page.dart';
 import 'shared_widgets.dart';
 
+/// 设置页按功能分区：学习 / 生词本 / 提醒 / 外观 / 桌面 / 数据与关于。
+///
+/// 生词本与题型方向来自另一处并行落地的数据契约
+/// （`AppSettings.notebookAutoAddErrors`、`notebookRemoveAfterCorrect`、
+/// `questionDirection`）。这里用 `_readCompatSetting` / `_writeCompatSetting`
+/// 做防御式读写：契约缺失时控件仍可渲染，保存时给出提示而不是让整页报错。
 class SettingsPage extends StatefulWidget {
   const SettingsPage({
     super.key,
@@ -17,15 +25,35 @@ class SettingsPage extends StatefulWidget {
     this.onCheckUpdates,
     this.onConfigureUpdates,
     this.updateStatus = '尚未检查更新',
+    this.onPickBackground,
+    this.onDeleteBackground,
+    this.onOpenNotebook,
   });
 
+  final Future<String?> Function()? onPickBackground;
+  final Future<void> Function(String asset)? onDeleteBackground;
+
+  /// 保留参数以兼容应用外壳：复习日历导出入口已按需求整段移除，
+  /// 不再在本页渲染（保留字段不产生未使用告警）。
   final Future<void> Function()? onCalendar, onCheckUpdates, onConfigureUpdates;
+
+  /// 应用外壳切到「词书 → 生词本」时可注入此回调；未注入时
+  /// 「打开生词本」按钮会把词书页作为新路由推入，保证按钮始终可用。
+  final Future<void> Function()? onOpenNotebook;
   final String updateStatus;
   final bool native;
   final AppController controller;
   final Future<void> Function() onPlatformChanged;
   final Future<void> Function() onTestNotification;
   final DesktopService desktop;
+
+  /// 提醒分区的可见性规则：Android 上系统提醒不可靠，整块隐藏；
+  /// 其余平台（含 native:false 的测试环境）只保留最小实验分区。
+  /// 抽成静态方法，便于测试直接校验这条守卫。
+  static bool showReminderSection({
+    required bool native,
+    required bool android,
+  }) => !(native && android);
 
   @override
   State<SettingsPage> createState() => _SettingsPageState();
@@ -34,6 +62,15 @@ class SettingsPage extends StatefulWidget {
 class _SettingsPageState extends State<SettingsPage> {
   bool? _autoStart;
   bool _startupBusy = false;
+  bool _backgroundBusy = false;
+
+  static const _accentPresets = <int, String>{
+    0xff23775d: '松绿',
+    0xff366bb3: '湖蓝',
+    0xff8056a6: '鸢紫',
+    0xffb55b72: '蔷薇',
+    0xffa76c27: '琥珀',
+  };
 
   AppController get c => widget.controller;
   AppSettings get s => c.settings;
@@ -68,6 +105,16 @@ class _SettingsPageState extends State<SettingsPage> {
     if (!ok || !mounted) return;
     if (platform && widget.native) await widget.onPlatformChanged();
     if (mounted) setState(() {});
+  }
+
+  /// 写入并行契约中的字段；契约缺失时保持原值并提示，不影响其余设置。
+  Future<void> _updateCompat(String name, String label, Object value) async {
+    final probe = AppSettings.fromJson(s.toJson());
+    if (!_writeCompatSetting(probe, name, value)) {
+      _message('「$label」在当前版本还不可用，已保持原值。');
+      return;
+    }
+    await _update((settings) => _writeCompatSetting(settings, name, value));
   }
 
   Future<void> _toggleNotifications(bool enabled) async {
@@ -115,25 +162,162 @@ class _SettingsPageState extends State<SettingsPage> {
     }
   }
 
+  Future<void> _customAccent() async {
+    final input = TextEditingController(
+      text: '#${s.accentArgb.toRadixString(16).substring(2).toUpperCase()}',
+    );
+    final key = GlobalKey<FormState>();
+    final accent = await showDialog<int>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('自定义主题色'),
+        content: Form(
+          key: key,
+          child: TextFormField(
+            controller: input,
+            autofocus: true,
+            maxLength: 7,
+            decoration: const InputDecoration(
+              labelText: 'HEX 颜色',
+              hintText: '#23775D',
+              helperText: '输入六位 HEX 颜色，不支持透明色。',
+            ),
+            validator: (text) => parseAccentHex(text ?? '') == null
+                ? '请输入 #RRGGBB 或 RRGGBB'
+                : null,
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (key.currentState!.validate()) {
+                Navigator.pop(context, parseAccentHex(input.text));
+              }
+            },
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (accent != null) {
+      await _update((settings) => settings.accentArgb = accent);
+    }
+  }
+
+  Future<void> _discardBackground(String asset) async {
+    try {
+      await widget.onDeleteBackground?.call(asset);
+    } catch (_) {
+      // Failed cleanup must not undo saved settings.
+    }
+  }
+
+  Future<void> _pickBackground() async {
+    if (_backgroundBusy || widget.onPickBackground == null) return;
+    setState(() => _backgroundBusy = true);
+    String? chosen;
+    var saved = false;
+    try {
+      chosen = await widget.onPickBackground!();
+      if (chosen == null) return;
+      if (!isValidBackgroundAsset(chosen) || chosen.isEmpty) {
+        throw const FormatException('背景图片引用无效');
+      }
+      if (!mounted) return;
+      final previous = s.backgroundAsset;
+      saved = await c.updateSettings(
+        (settings) => settings.backgroundAsset = chosen!,
+      );
+      if (saved) {
+        if (previous != chosen) await _discardBackground(previous);
+      } else {
+        _message('背景未保存，原背景已保留。');
+      }
+    } catch (error) {
+      _message('无法设置背景图片：$error');
+    } finally {
+      if (!saved && chosen != null && chosen != s.backgroundAsset) {
+        await _discardBackground(chosen);
+      }
+      if (mounted) setState(() => _backgroundBusy = false);
+    }
+  }
+
+  Future<void> _clearBackground() async {
+    if (_backgroundBusy) return;
+    final previous = s.backgroundAsset;
+    final saved = await c.updateSettings(
+      (settings) => settings.backgroundAsset = '',
+    );
+    if (saved) await _discardBackground(previous);
+    if (mounted) setState(() {});
+  }
+
+  /// 打开生词本：优先使用外壳注入的切页回调；
+  /// 未注入时把词书页作为路由推入，按钮在任何装配方式下都可用。
+  Future<void> _openNotebook() async {
+    final callback = widget.onOpenNotebook;
+    if (callback != null) {
+      await callback();
+      return;
+    }
+    final navigator = Navigator.of(context);
+    await navigator.push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: const Text('生词本'), leading: const BackButton()),
+          body: SafeArea(child: LibraryPage(controller: c)),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final date = DateTime.tryParse(s.examDate)?.toLocal();
     final desktopAvailable = widget.native && widget.desktop.isDesktop;
+    // Android 上系统提醒不可靠：整块「提醒」分区隐藏。
+    final showReminder = SettingsPage.showReminderSection(
+      native: widget.native,
+      android: widget.desktop.isAndroid,
+    );
+    final direction = _readCompatString(s, 'questionDirection', 'en2zh');
+    final notebookAutoAdd = _readCompatBool(s, 'notebookAutoAddErrors', true);
+    final notebookRemoveAfter = _readCompatInt(
+      s,
+      'notebookRemoveAfterCorrect',
+      0,
+    );
+    final notebookCount = _readNotebookIds(c).length;
+
     return ContentShell(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const PageHeading(title: '偏好设置', subtitle: '调整学习节奏和桌面体验，让词栖更贴近你的日常。'),
+          const PageHeading(
+            title: '偏好设置',
+            subtitle: '按功能分区的设置清单：先看概览，再按需调整每一块。',
+          ),
           const SizedBox(height: 25),
+          _overview(
+            theme,
+            direction: direction,
+            notebookAutoAdd: notebookAutoAdd,
+          ),
           _section(
-            icon: Icons.tune_rounded,
-            title: '通用',
-            subtitle: '这些设置会影响新一轮学习和复习队列。',
+            icon: Icons.school_outlined,
+            title: '学习',
+            subtitle: '每一轮的词数、顺序、题目形态和卡片显示内容。',
             children: [
               _SettingRow(
                 title: '每轮词数',
-                subtitle: '默认词数，也可在开始新一轮前调整。',
+                subtitle: '默认词数，也可以自定义 1–50；开始新一轮前还能临时调整。',
                 trailing: RoundCountChips(
                   value: s.roundSize,
                   enabled: !c.saving,
@@ -173,57 +357,15 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                 ),
               ),
-            ],
-          ),
-          _section(
-            icon: Icons.visibility_outlined,
-            title: '学习内容',
-            subtitle: '控制学习卡片中呈现的辅助信息。',
-            children: [
               LabeledSwitch(
-                title: '显示中文释义',
-                subtitle: '在学习卡片和选项中显示中文释义。',
-                value: s.showChinese,
+                title: '答对后自动进入下一题',
+                subtitle: '仅答对后自动推进；答错时停留查看答案。',
+                value: s.autoAdvance,
                 onChanged: (value) =>
-                    _update((settings) => settings.showChinese = value),
-              ),
-              LabeledSwitch(
-                title: '显示音标',
-                subtitle: '显示英式或美式音标，并保留朗读入口。',
-                value: s.showPhonetic,
-                onChanged: (value) =>
-                    _update((settings) => settings.showPhonetic = value),
-              ),
-              LabeledSwitch(
-                title: '显示例句',
-                subtitle: '在答案背面展示原词书例句和译文。',
-                value: s.showExample,
-                onChanged: (value) =>
-                    _update((settings) => settings.showExample = value),
-              ),
-              LabeledSwitch(
-                title: '显示词根词源',
-                subtitle: '如果词条提供了词根或词源，显示在答案背面。',
-                value: s.showRoot,
-                onChanged: (value) =>
-                    _update((settings) => settings.showRoot = value),
-              ),
-              LabeledSwitch(
-                title: '显示近义词',
-                subtitle: '显示词条导入数据中的近义词信息。',
-                value: s.showSynonyms,
-                onChanged: (value) =>
-                    _update((settings) => settings.showSynonyms = value),
-              ),
-              LabeledSwitch(
-                title: '显示我的笔记',
-                subtitle: '在学习卡片背面展示你为词条写下的笔记。',
-                value: s.showNotes,
-                onChanged: (value) =>
-                    _update((settings) => settings.showNotes = value),
+                    _update((settings) => settings.autoAdvance = value),
               ),
               _SettingRow(
-                title: '正式题选项数',
+                title: '选项数',
                 subtitle: '四选一更有挑战，二选一更适合初次学习。',
                 trailing: _ChoiceButtons<int>(
                   value: s.optionCount,
@@ -233,15 +375,99 @@ class _SettingsPageState extends State<SettingsPage> {
                       _update((settings) => settings.optionCount = value),
                 ),
               ),
-              LabeledSwitch(
-                title: '答对后自动进入下一词',
-                subtitle: '仅答对后自动推进；答错时停留查看答案。',
-                value: s.autoAdvance,
-                onChanged: (value) =>
-                    _update((settings) => settings.autoAdvance = value),
+              _SettingRow(
+                title: '答错重现间隔',
+                subtitle: '答错的词在多久后重新进入复习队列。',
+                trailing: _ChoiceButtons<int>(
+                  value: s.errorMinutes,
+                  values: const [5, 10, 20, 30],
+                  labels: const ['5 分钟', '10 分钟', '20 分钟', '30 分钟'],
+                  onChanged: (value) =>
+                      _update((settings) => settings.errorMinutes = value),
+                ),
+              ),
+              _SettingRow(
+                title: '题型方向',
+                subtitle: direction == 'zh2en'
+                    ? '当前：看中选英，选项是英文单词。'
+                    : '当前：看英选中，选项是中文释义。',
+                trailing: _ChoiceButtons<String>(
+                  value: direction == 'zh2en' ? 'zh2en' : 'en2zh',
+                  values: const ['en2zh', 'zh2en'],
+                  labels: const ['看英选中', '看中选英'],
+                  onChanged: (value) =>
+                      _updateCompat('questionDirection', '题型方向', value),
+                ),
+              ),
+              _groupTitle(theme, '卡片显示内容'),
+              _ToggleChips(
+                enabled: !c.saving,
+                options: [
+                  _ToggleOption(
+                    label: '中文释义',
+                    value: s.showChinese,
+                    onChanged: (value) =>
+                        _update((settings) => settings.showChinese = value),
+                  ),
+                  _ToggleOption(
+                    label: '音标',
+                    value: s.showPhonetic,
+                    onChanged: (value) =>
+                        _update((settings) => settings.showPhonetic = value),
+                  ),
+                  _ToggleOption(
+                    label: '例句',
+                    value: s.showExample,
+                    onChanged: (value) =>
+                        _update((settings) => settings.showExample = value),
+                  ),
+                  _ToggleOption(
+                    label: '词根',
+                    value: s.showRoot,
+                    onChanged: (value) =>
+                        _update((settings) => settings.showRoot = value),
+                  ),
+                  _ToggleOption(
+                    label: '近义词',
+                    value: s.showSynonyms,
+                    onChanged: (value) =>
+                        _update((settings) => settings.showSynonyms = value),
+                  ),
+                  _ToggleOption(
+                    label: '笔记',
+                    value: s.showNotes,
+                    onChanged: (value) =>
+                        _update((settings) => settings.showNotes = value),
+                  ),
+                ],
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 8, bottom: 6),
+                child: Text(
+                  '关闭只影响学习卡片和选项中的展示，不会删除已有数据。',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
               ),
               LabeledSwitch(
-                title: '输入题显示答案提示',
+                title: '自动朗读',
+                subtitle: '切换词条时朗读一次，关闭后仍可手动播放。',
+                value: s.autoTts,
+                onChanged: (value) => _update(
+                  (settings) => settings.autoTts = value,
+                  platform: true,
+                ),
+              ),
+              LabeledSwitch(
+                title: '英文朗读入口',
+                subtitle: '在学习页面提供英语发音按钮；是否播放由系统音频状态决定。',
+                value: s.tts,
+                onChanged: (value) =>
+                    _update((settings) => settings.tts = value, platform: true),
+              ),
+              LabeledSwitch(
+                title: '输入提示',
                 subtitle: '输入题中允许逐步显示首字母提示。',
                 value: s.typingReveal,
                 onChanged: (value) =>
@@ -254,146 +480,136 @@ class _SettingsPageState extends State<SettingsPage> {
                 onChanged: (value) =>
                     _update((settings) => settings.sound = value),
               ),
+            ],
+          ),
+          _section(
+            icon: Icons.collections_bookmark_outlined,
+            title: '生词本',
+            subtitle: '自动收集答错的词，熟悉之后也可以自动移除。',
+            children: [
               LabeledSwitch(
-                title: '英文朗读',
-                subtitle: '在学习页面提供英语发音按钮；是否播放由系统音频状态决定。',
-                value: s.tts,
+                title: '答错自动加入',
+                subtitle: notebookAutoAdd
+                    ? '正式题答错后，这个词会自动进入生词本，方便集中复习。'
+                    : '关闭后只有你手动加入的词会进入生词本。',
+                value: notebookAutoAdd,
                 onChanged: (value) =>
-                    _update((settings) => settings.tts = value, platform: true),
+                    _updateCompat('notebookAutoAddErrors', '答错自动加入', value),
               ),
-              LabeledSwitch(
-                title: '自动朗读',
-                subtitle: '切换词条时朗读一次，关闭后仍可手动播放。',
-                value: s.autoTts,
-                onChanged: (value) => _update(
-                  (settings) => settings.autoTts = value,
-                  platform: true,
+              _SettingRow(
+                title: '答对几次后自动移除',
+                subtitle: notebookRemoveAfter == 0
+                    ? '当前不自动移除；词会一直留在生词本里，直到你手动处理。'
+                    : '连续答对 $notebookRemoveAfter 次后自动移出生词本。',
+                trailing: _ChoiceButtons<int>(
+                  value: notebookRemoveAfter.clamp(0, 10),
+                  values: const [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                  labels: [
+                    for (var count = 0; count <= 10; count++)
+                      count == 0 ? '不自动移除' : '$count 次',
+                  ],
+                  onChanged: (value) => _updateCompat(
+                    'notebookRemoveAfterCorrect',
+                    '答对几次后自动移除',
+                    value,
+                  ),
                 ),
               ),
               _SettingRow(
-                title: '答错后重试间隔',
-                subtitle: '答错的词在多久后重新进入复习队列。',
-                trailing: _ChoiceButtons<int>(
-                  value: s.errorMinutes,
-                  values: const [5, 10, 20, 30],
-                  labels: const ['5 分钟', '10 分钟', '20 分钟', '30 分钟'],
-                  onChanged: (value) =>
-                      _update((settings) => settings.errorMinutes = value),
+                title: '查看与打开',
+                subtitle: notebookCount == 0
+                    ? '生词本还是空的；答错正式题后会自动收录（可在上方关闭）。'
+                    : '生词本里现在有 $notebookCount 个词。',
+                trailing: FilledButton.tonalIcon(
+                  onPressed: _openNotebook,
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: const Text('打开生词本'),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.only(top: 12),
+                child: Text(
+                  '生词本只保存在本机数据库，不会上传；需要带走时，请到「我的词书」使用「导出完整备份」。',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                    height: 1.5,
+                  ),
                 ),
               ),
             ],
           ),
-          _section(
-            icon: Icons.notifications_none_rounded,
-            title: '提醒',
-            subtitle: '提醒只根据本地学习进度安排，不会上传词书或学习记录。',
-            children: [
-              LabeledSwitch(
-                title: '开启复习提醒',
-                subtitle: s.notifications
-                    ? '已开启；系统可能仍会受勿扰模式和系统权限影响。'
-                    : '关闭后不会向系统请求复习通知权限。',
-                value: s.notifications,
-                onChanged: (value) => _toggleNotifications(value),
-              ),
-              _SettingRow(
-                title: '提醒间隔',
-                subtitle: '两次系统提醒之间至少间隔的时间。',
-                trailing: _ChoiceButtons<int>(
-                  value: s.reminderMinutes,
-                  values: const [15, 30, 60, 120],
-                  labels: const ['15 分', '30 分', '1 小时', '2 小时'],
-                  onChanged: (value) =>
-                      _update((settings) => settings.reminderMinutes = value),
+          if (showReminder)
+            _section(
+              icon: Icons.notifications_none_rounded,
+              title: '提醒',
+              subtitle: '实验性功能：只做最小验证，不保证通知按时送达。',
+              children: [
+                LabeledSwitch(
+                  title: '实验性复习提醒（Windows）',
+                  subtitle: s.notifications
+                      ? '已请求系统通知权限；横幅仍可能被免打扰或系统设置隐藏。'
+                      : '默认关闭。开启只会向系统请求通知权限，不改变本地学习数据。',
+                  value: s.notifications,
+                  onChanged: (value) => _toggleNotifications(value),
                 ),
-              ),
-              _SettingRow(
-                title: '提醒时间段',
-                subtitle: '只在这个时间范围内请求下一条复习提醒。',
-                trailing: Wrap(
-                  spacing: 7,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    _HourDropdown(
-                      value: s.startHour,
-                      onChanged: (value) =>
-                          _update((settings) => settings.startHour = value),
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    'Windows 通知仍在验证中，可能不出现或被系统拦截；Android 上不提供提醒，'
+                    '因此这一分区在 Android 会被隐藏。提醒间隔与时间段沿用已保存的规则，'
+                    '本页不再提供调整入口。',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                      height: 1.55,
                     ),
-                    const Text('至'),
-                    _HourDropdown(
-                      value: s.endHour,
-                      maxEnd: true,
-                      onChanged: (value) =>
-                          _update((settings) => settings.endHour = value),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-              LabeledSwitch(
-                title: '提醒中显示中文',
-                subtitle: '通知正文显示中文释义；关闭时只显示单词和提醒类型。',
-                value: s.reviewNotificationChinese,
-                onChanged: (value) => _update(
-                  (settings) => settings.reviewNotificationChinese = value,
-                ),
-              ),
-              if (s.notifications)
+                const SizedBox(height: 12),
                 Align(
                   alignment: Alignment.centerLeft,
                   child: OutlinedButton.icon(
                     onPressed: widget.native ? widget.onTestNotification : null,
                     icon: const Icon(Icons.notifications_active_outlined),
-                    label: const Text('发送一条测试提醒'),
+                    label: const Text('发送测试通知'),
                   ),
                 ),
-            ],
-          ),
-          _section(
-            icon: Icons.event_outlined,
-            title: '日历与更新',
-            subtitle: '由你主动导出日历或检查更新，不会自动上传学习内容。',
-            children: [
-              _SettingRow(
-                title: '复习日历',
-                subtitle: '导出日历文件后可手动导入日历应用。',
-                trailing: OutlinedButton(
-                  onPressed: widget.onCalendar,
-                  child: const Text('导出复习日历'),
-                ),
-              ),
-              _SettingRow(
-                title: '应用更新',
-                subtitle: widget.updateStatus,
-                trailing: Wrap(
-                  spacing: 8,
-                  children: [
-                    OutlinedButton(
-                      onPressed: widget.onCheckUpdates,
-                      child: const Text('检查更新'),
-                    ),
-                    TextButton(
-                      onPressed: widget.onConfigureUpdates,
-                      child: const Text('更新设置'),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
+              ],
+            ),
           _section(
             icon: Icons.palette_outlined,
             title: '外观',
-            subtitle: '选择适合你环境的颜色和文字大小。',
+            subtitle: '颜色、材质、背景和字号；只影响本机显示。',
             children: [
               _SettingRow(
-                title: '文案风格',
-                subtitle: '简洁风格保持原有表达；趣味风格只调整少量学习提示，不改变统计和错误说明。',
-                trailing: _ChoiceButtons<String>(
-                  value: s.copyStyle,
-                  values: const ['plain', 'cute'],
-                  labels: const ['简洁', '有趣'],
-                  onChanged: (value) =>
-                      _update((settings) => settings.copyStyle = value),
+                title: '主题色',
+                subtitle: '选择预设颜色，也可以输入不透明的 HEX 颜色。',
+                trailing: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final preset in _accentPresets.entries)
+                      ChoiceChip(
+                        avatar: CircleAvatar(
+                          backgroundColor: Color(preset.key),
+                          radius: 8,
+                        ),
+                        label: Text(preset.value),
+                        selected: s.accentArgb == preset.key,
+                        onSelected: c.saving
+                            ? null
+                            : (_) => _update(
+                                (settings) => settings.accentArgb = preset.key,
+                              ),
+                      ),
+                    ActionChip(
+                      label: Text(
+                        _accentPresets.containsKey(s.accentArgb)
+                            ? '自定义 HEX'
+                            : '#${s.accentArgb.toRadixString(16).substring(2).toUpperCase()}',
+                      ),
+                      onPressed: c.saving ? null : _customAccent,
+                    ),
+                  ],
                 ),
               ),
               _SettingRow(
@@ -418,12 +634,126 @@ class _SettingsPageState extends State<SettingsPage> {
                       _update((settings) => settings.fontScale = value),
                 ),
               ),
+              _SettingRow(
+                title: '表面材质',
+                subtitle: '玻璃效果由应用内模糊合成，不依赖系统 Mica；文字保持不透明。',
+                trailing: _ChoiceButtons<String>(
+                  value: s.materialMode,
+                  values: const ['solid', 'glass'],
+                  labels: const ['纯色', '玻璃'],
+                  onChanged: (value) =>
+                      _update((settings) => settings.materialMode = value),
+                ),
+              ),
+              _SettingRow(
+                title: '背景图片',
+                subtitle: s.backgroundAsset.isEmpty
+                    ? '静态 PNG / JPEG，最大 10 MB、1600 万像素。图片复制到本机，不随备份导出。'
+                    : '已使用本地背景图片；原文件移动不影响背景，换机后需重新选择。',
+                trailing: Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton.icon(
+                      key: const ValueKey('pick-background'),
+                      onPressed:
+                          !_backgroundBusy &&
+                              !c.saving &&
+                              widget.onPickBackground != null
+                          ? _pickBackground
+                          : null,
+                      icon: const Icon(Icons.image_outlined),
+                      label: Text(_backgroundBusy ? '正在处理…' : '选择图片'),
+                    ),
+                    if (s.backgroundAsset.isNotEmpty)
+                      TextButton(
+                        onPressed: !_backgroundBusy && !c.saving
+                            ? _clearBackground
+                            : null,
+                        child: const Text('清除图片'),
+                      ),
+                  ],
+                ),
+              ),
+              _SettingRow(
+                title: '背景图片不透明度',
+                subtitle: '只调整图片，不影响文字；背景保留护眼遮罩。',
+                trailing: _OpacitySlider(
+                  key: const ValueKey('background-opacity'),
+                  value: s.backgroundOpacity,
+                  min: 0,
+                  enabled: !c.saving && s.backgroundAsset.isNotEmpty,
+                  onPreview: (value) => backgroundOpacityPreview.value = value,
+                  onChangeEnd: (value) =>
+                      _update((settings) => settings.backgroundOpacity = value),
+                ),
+              ),
+              _SettingRow(
+                title: '表面不透明度',
+                subtitle: '卡片和导航表面的不透明度；低值会更明显地透出背景。',
+                trailing: _OpacitySlider(
+                  key: const ValueKey('surface-opacity'),
+                  value: s.surfaceOpacity,
+                  min: .2,
+                  enabled: !c.saving,
+                  onPreview: (value) => surfaceOpacityPreview.value = value,
+                  onChangeEnd: (value) =>
+                      _update((settings) => settings.surfaceOpacity = value),
+                ),
+              ),
+              LabeledSwitch(
+                title: '悬浮底栏',
+                subtitle: '关闭时宽屏侧栏/窄屏底栏自适应；开启后使用悬浮底栏，输入时自动隐藏。',
+                value: s.navigationStyle == 'floating',
+                onChanged: (value) => _update(
+                  (settings) => settings.navigationStyle = value
+                      ? 'floating'
+                      : 'adaptive',
+                ),
+              ),
+              if (s.navigationStyle == 'floating')
+                _SettingRow(
+                  title: '底栏两侧留白',
+                  subtitle: '0–48：数值越大，悬浮底栏越窄、离屏幕边缘越远。',
+                  trailing: _NumberStepper(
+                    value: s.navigationInset,
+                    min: 0,
+                    max: 48,
+                    step: 4,
+                    onChanged: (value) =>
+                        _update((settings) => settings.navigationInset = value),
+                  ),
+                ),
+              if (s.navigationStyle == 'floating')
+                _SettingRow(
+                  title: '底栏圆角',
+                  subtitle: '0–48：控制悬浮底栏的圆角弧度。',
+                  trailing: _NumberStepper(
+                    value: s.navigationRadius,
+                    min: 0,
+                    max: 48,
+                    step: 4,
+                    onChanged: (value) => _update(
+                      (settings) => settings.navigationRadius = value,
+                    ),
+                  ),
+                ),
+              _SettingRow(
+                title: '文案风格',
+                subtitle: '简洁风格保持原有表达；趣味风格只调整少量学习提示，不改变统计和错误说明。',
+                trailing: _ChoiceButtons<String>(
+                  value: s.copyStyle,
+                  values: const ['plain', 'cute'],
+                  labels: const ['简洁', '有趣'],
+                  onChanged: (value) =>
+                      _update((settings) => settings.copyStyle = value),
+                ),
+              ),
             ],
           ),
           if (desktopAvailable)
             _section(
               icon: Icons.desktop_windows_outlined,
-              title: '桌面体验',
+              title: '桌面',
               subtitle: '桌面服务已连接，可以使用快捷键、托盘和小窗。',
               children: [
                 _SettingRow(
@@ -545,8 +875,8 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           _section(
             icon: Icons.shield_outlined,
-            title: '本地数据与备份',
-            subtitle: '词栖使用本地数据库保存词书、笔记、卡片和学习记录。',
+            title: '数据与关于',
+            subtitle: '本地备份说明、开源许可、版本和更新检查。',
             children: [
               const Padding(
                 padding: EdgeInsets.only(bottom: 12),
@@ -577,16 +907,36 @@ class _SettingsPageState extends State<SettingsPage> {
               OutlinedButton.icon(
                 onPressed: () => showLicensePage(
                   context: context,
-                  applicationName: '词栖 WordNest',
-                  applicationVersion: '0.1.0',
+                  applicationName: '词栖',
+                  applicationVersion: '0.3.0',
                   applicationLegalese: '本地优先的轻量记词工具',
                 ),
                 icon: const Icon(Icons.menu_book_outlined),
                 label: const Text('查看开源许可'),
               ),
+              const Divider(height: 30),
+              _SettingRow(
+                title: '应用更新',
+                subtitle: widget.updateStatus,
+                trailing: Wrap(
+                  spacing: 8,
+                  children: [
+                    OutlinedButton(
+                      onPressed: widget.onCheckUpdates,
+                      child: const Text('检查更新'),
+                    ),
+                    TextButton(
+                      onPressed: widget.onConfigureUpdates,
+                      child: const Text('更新来源'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text('词栖 · 0.3.0', style: theme.textTheme.titleSmall),
             ],
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           Text(
             '词栖会在每次修改后保存设置。${c.saving ? '正在保存…' : '当前设置已保存。'}',
             style: theme.textTheme.bodySmall?.copyWith(
@@ -597,6 +947,105 @@ class _SettingsPageState extends State<SettingsPage> {
       ),
     );
   }
+
+  /// 顶部的紧凑概览：一眼看清当前配置，再去下面的分区里修改。
+  Widget _overview(
+    ThemeData theme, {
+    required String direction,
+    required bool notebookAutoAdd,
+  }) {
+    final chips = <String>[
+      '每轮 ${s.roundSize} 词',
+      '顺序：${learningOrderLabels[s.learningOrder] ?? s.learningOrder}',
+      '方向：${direction == 'zh2en' ? '看中选英' : '看英选中'}',
+      '主题：${_themeLabel(s.theme)}',
+      '字号：${_fontScaleLabel(s.fontScale)}',
+      '材质：${s.materialMode == 'glass' ? '玻璃' : '纯色'}',
+      '生词本：${notebookAutoAdd ? '错题自动收录' : '手动收录'}',
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: SurfaceCard(
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  Icons.dashboard_customize_outlined,
+                  size: 19,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 9),
+                const Text(
+                  '当前概览',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 7,
+              runSpacing: 7,
+              children: [
+                for (final chip in chips)
+                  Chip(
+                    label: Text(chip),
+                    visualDensity: VisualDensity.compact,
+                    side: BorderSide.none,
+                    backgroundColor: theme.colorScheme.primaryContainer
+                        .withValues(alpha: .35),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 9),
+            Text(
+              '下面的分区按功能划分，可直接修改；所有设置都只保存在本机。',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _themeLabel(String theme) => switch (theme) {
+    'dark' => '深色',
+    'system' => '跟随系统',
+    _ => '浅色',
+  };
+
+  String _fontScaleLabel(double scale) {
+    if (scale <= .95) return '小';
+    if (scale >= 1.25) return '更大';
+    if (scale > 1) return '大';
+    return '标准';
+  }
+
+  Widget _groupTitle(ThemeData theme, String title) => Padding(
+    padding: const EdgeInsets.only(top: 14, bottom: 8),
+    child: Row(
+      children: [
+        Text(
+          title,
+          style: theme.textTheme.labelLarge?.copyWith(
+            fontWeight: FontWeight.w700,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Divider(
+            height: 1,
+            color: theme.dividerColor.withValues(alpha: .5),
+          ),
+        ),
+      ],
+    ),
+  );
 
   Widget _section({
     required IconData icon,
@@ -618,6 +1067,92 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
       ),
     );
+  }
+}
+
+/// 读取并行契约字段；字段不存在时返回 null，页面照常渲染。
+Object? _readCompatSetting(AppSettings settings, String name) {
+  final dynamic target = settings;
+  try {
+    final Object? value = switch (name) {
+      'notebookAutoAddErrors' => target.notebookAutoAddErrors,
+      'notebookRemoveAfterCorrect' => target.notebookRemoveAfterCorrect,
+      'questionDirection' => target.questionDirection,
+      _ => null,
+    };
+    return value;
+  } catch (_) {
+    return null;
+  }
+}
+
+/// 写入并行契约字段；字段不存在或类型不符时返回 false，由调用方提示。
+bool _writeCompatSetting(AppSettings settings, String name, Object value) {
+  final dynamic target = settings;
+  try {
+    switch (name) {
+      case 'notebookAutoAddErrors':
+        target.notebookAutoAddErrors = value;
+        break;
+      case 'notebookRemoveAfterCorrect':
+        target.notebookRemoveAfterCorrect = value;
+        break;
+      case 'questionDirection':
+        target.questionDirection = value;
+        break;
+      default:
+        return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+bool _readCompatBool(AppSettings settings, String name, bool fallback) {
+  final value = _readCompatSetting(settings, name);
+  return value is bool ? value : fallback;
+}
+
+int _readCompatInt(AppSettings settings, String name, int fallback) {
+  final value = _readCompatSetting(settings, name);
+  return value is int ? value : fallback;
+}
+
+String _readCompatString(AppSettings settings, String name, String fallback) {
+  final value = _readCompatSetting(settings, name);
+  return value is String && value.isNotEmpty ? value : fallback;
+}
+
+/// 防御式读取 `AppController.notebookIds` / `notebookEntries`；
+/// 契约缺失时返回空列表，页面显示空态而不是崩溃。
+List<String> _readNotebookIds(AppController controller) {
+  final value = _readControllerMember(controller, 'notebookIds');
+  if (value is Iterable) return value.map((id) => '$id').toList();
+  final entries = _readControllerMember(controller, 'notebookEntries');
+  if (entries is Iterable) {
+    final ids = <String>[
+      for (final item in entries)
+        if (item is WordEntry) item.id else if (item is String) item,
+    ];
+    if (ids.isNotEmpty || entries.isEmpty) return ids;
+  }
+  return const [];
+}
+
+/// 读取控制器成员：getter 或零参方法都可以；不存在时返回 null。
+Object? _readControllerMember(AppController controller, String name) {
+  final dynamic target = controller;
+  try {
+    final Object? value = switch (name) {
+      'notebookIds' => target.notebookIds,
+      'notebookEntries' => target.notebookEntries,
+      _ => null,
+    };
+    if (value is Function) return Function.apply(value, const []);
+    return value;
+  } catch (_) {
+    return null;
   }
 }
 
@@ -672,6 +1207,37 @@ class _SettingRow extends StatelessWidget {
   }
 }
 
+class _ToggleOption {
+  const _ToggleOption({
+    required this.label,
+    required this.value,
+    required this.onChanged,
+  });
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
+}
+
+/// 紧凑的开关组：一个标签一个开关，适合「显示内容」这类并列选项。
+class _ToggleChips extends StatelessWidget {
+  const _ToggleChips({required this.options, required this.enabled});
+  final List<_ToggleOption> options;
+  final bool enabled;
+  @override
+  Widget build(BuildContext context) => Wrap(
+    spacing: 7,
+    runSpacing: 7,
+    children: [
+      for (final option in options)
+        FilterChip(
+          label: Text(option.label),
+          selected: option.value,
+          onSelected: enabled ? option.onChanged : null,
+        ),
+    ],
+  );
+}
+
 class _ChoiceButtons<T> extends StatelessWidget {
   const _ChoiceButtons({
     required this.value,
@@ -695,6 +1261,70 @@ class _ChoiceButtons<T> extends StatelessWidget {
             onSelected: (_) => onChanged(values[i]),
           ),
       ],
+    );
+  }
+}
+
+class _OpacitySlider extends StatefulWidget {
+  const _OpacitySlider({
+    super.key,
+    required this.value,
+    required this.min,
+    required this.enabled,
+    required this.onChangeEnd,
+    this.onPreview,
+  });
+
+  final double value, min;
+  final bool enabled;
+  final ValueChanged<double> onChangeEnd;
+  final ValueChanged<double?>? onPreview;
+
+  @override
+  State<_OpacitySlider> createState() => _OpacitySliderState();
+}
+
+class _OpacitySliderState extends State<_OpacitySlider> {
+  double? _draft;
+
+  @override
+  void didUpdateWidget(covariant _OpacitySlider oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.value != widget.value || !widget.enabled) _draft = null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = _draft ?? widget.value;
+    return SizedBox(
+      width: 280,
+      child: Row(
+        children: [
+          Expanded(
+            child: Slider(
+              value: value,
+              min: widget.min,
+              max: 1,
+              divisions: ((1 - widget.min) * 100).round(),
+              label: '${(value * 100).round()}%',
+              onChanged: widget.enabled
+                  ? (next) {
+                      widget.onPreview?.call(next);
+                      setState(() => _draft = next);
+                    }
+                  : null,
+              onChangeEnd: widget.enabled
+                  ? (next) {
+                      widget.onPreview?.call(null);
+                      setState(() => _draft = null);
+                      widget.onChangeEnd(next);
+                    }
+                  : null,
+            ),
+          ),
+          SizedBox(width: 40, child: Text('${(value * 100).round()}%')),
+        ],
+      ),
     );
   }
 }
@@ -738,30 +1368,5 @@ class _NumberStepper extends StatelessWidget {
         ),
       ],
     ),
-  );
-}
-
-class _HourDropdown extends StatelessWidget {
-  const _HourDropdown({
-    required this.value,
-    required this.onChanged,
-    this.maxEnd = false,
-  });
-  final int value;
-  final bool maxEnd;
-  final ValueChanged<int> onChanged;
-  @override
-  Widget build(BuildContext context) => DropdownButton<int>(
-    value: value,
-    items: [
-      for (var hour = 0; hour <= (maxEnd ? 24 : 23); hour++)
-        DropdownMenuItem(
-          value: hour,
-          child: Text('${hour.toString().padLeft(2, '0')}:00'),
-        ),
-    ],
-    onChanged: (next) {
-      if (next != null) onChanged(next);
-    },
   );
 }

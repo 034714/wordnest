@@ -73,6 +73,10 @@ class AppController extends ChangeNotifier {
   /// The active mode's session (legacy single-session view).
   Map<String, dynamic> get session => state.session;
   String get sessionMode => state.activeSessionMode;
+
+  /// True when [mode] has an unfinished session, for the home-page primary
+  /// button so "continue" always follows the mode the user selected.
+  bool resumableInMode(String mode) => _resumableIn(mode);
   List<String> get sessionIds => (session['ids'] as List? ?? []).cast<String>();
   int get sessionIndex => session['index'] as int? ?? 0;
   bool get resumable => _resumableIn(sessionMode);
@@ -156,6 +160,92 @@ class AppController extends ChangeNotifier {
     await storage.saveNote(id, text);
     state.notes[id] = text;
   });
+
+  /// 生词本成员 ID 集合（只读视图）。
+  Set<String> get notebookIds => Set.unmodifiable(state.notebook);
+  bool isNotebook(String id) => state.notebook.contains(id);
+
+  /// 生词本词条：当前词书按书内顺序在前，其余按词书与载入顺序稳定排列。
+  List<WordEntry> get notebookEntries {
+    final ordered = <WordEntry>[];
+    final seen = <String>{};
+    void collect(WordBook? value) {
+      if (value == null) return;
+      for (final id in value.uniqueIds) {
+        if (!state.notebook.contains(id) || !seen.add(id)) continue;
+        final entry = state.entries[id];
+        if (entry != null) ordered.add(entry);
+      }
+    }
+
+    final current = book;
+    collect(current);
+    for (final value in state.books) {
+      if (value.id != current?.id) collect(value);
+    }
+    for (final id in state.notebook) {
+      if (seen.add(id)) {
+        final entry = state.entries[id];
+        if (entry != null) ordered.add(entry);
+      }
+    }
+    return ordered;
+  }
+
+  /// 加入/移出/切换生词本；不存在的词条会被拒绝且状态不变。
+  Future<bool> toggleNotebook(String id) => _setNotebook(id, null);
+  Future<bool> addToNotebook(String id) => _setNotebook(id, true);
+  Future<bool> removeFromNotebook(String id) => _setNotebook(id, false);
+
+  Future<bool> _setNotebook(String id, bool? member) => _write(() async {
+    if (!state.entries.containsKey(id)) {
+      throw FormatException('生词本引用了不存在的单词：$id');
+    }
+    final add = member ?? !state.notebook.contains(id);
+    if (add == state.notebook.contains(id)) return;
+    final notebook = {...state.notebook};
+    // 手动增删从零开始计数，避免残留连对次数立刻触发移除。
+    final progress = {...state.notebookProgress}..remove(id);
+    if (add) {
+      notebook.add(id);
+    } else {
+      notebook.remove(id);
+    }
+    await storage.saveNotebook(notebook, progress);
+    state.notebook = notebook;
+    state.notebookProgress = progress;
+  });
+
+  /// 最近的正式答错记录，最新在前；[limit] 为 null 时返回全部。
+  List<LearningEvent> wrongFormalEvents({int? limit}) {
+    final indexed = <(int, LearningEvent)>[];
+    for (var i = 0; i < state.events.length; i++) {
+      final event = state.events[i];
+      if (event.kind == 'formal' && event.correct == false) {
+        indexed.add((i, event));
+      }
+    }
+    indexed.sort((a, b) {
+      final byTime = b.$2.at.compareTo(a.$2.at);
+      return byTime != 0 ? byTime : b.$1.compareTo(a.$1);
+    });
+    final events = [for (final item in indexed) item.$2];
+    return limit == null ? events : events.take(max(0, limit)).toList();
+  }
+
+  /// 按本地日期（yyyy-MM-dd）分组，日期与组内事件均最新在前。
+  Map<String, List<LearningEvent>> wrongFormalEventsByDay({int? limit}) {
+    final grouped = <String, List<LearningEvent>>{};
+    for (final event in wrongFormalEvents(limit: limit)) {
+      final day = event.at.toLocal();
+      final key =
+          '${day.year.toString().padLeft(4, '0')}-'
+          '${day.month.toString().padLeft(2, '0')}-'
+          '${day.day.toString().padLeft(2, '0')}';
+      (grouped[key] ??= <LearningEvent>[]).add(event);
+    }
+    return grouped;
+  }
 
   /// Round queue for [mode]: due reviews first (earliest first), then unseen
   /// words in the selected study order. Known words never return as new.
@@ -327,6 +417,27 @@ class AppController extends ChangeNotifier {
           ? (action.isEmpty ? 'new' : 'new:$action')
           : action,
     );
+    // 生词本只响应正式作答：view/self/typing 不改成员与连对计数。
+    final formal = kind == 'formal';
+    var notebook = state.notebook;
+    var notebookProgress = state.notebookProgress;
+    if (formal && correct == false) {
+      final ids = {...notebook};
+      if (settings.notebookAutoAddErrors) ids.add(id);
+      notebook = ids;
+      notebookProgress = {...notebookProgress}..remove(id);
+    } else if (formal &&
+        correct == true &&
+        notebook.contains(id) &&
+        settings.notebookRemoveAfterCorrect > 0) {
+      final streak = (notebookProgress[id] ?? 0) + 1;
+      if (streak >= settings.notebookRemoveAfterCorrect) {
+        notebook = {...notebook}..remove(id);
+        notebookProgress = {...notebookProgress}..remove(id);
+      } else {
+        notebookProgress = {...notebookProgress, id: streak};
+      }
+    }
     final session = state.session.isEmpty
         ? _sessionBase(sessionMode, sessionPatch ?? const <String, dynamic>{})
         : {
@@ -341,10 +452,16 @@ class AppController extends ChangeNotifier {
       event,
       sessions: sessions,
       activeSessionMode: state.activeSessionMode,
+      notebook: formal ? notebook : null,
+      notebookProgress: formal ? notebookProgress : null,
     );
     state.cards[id] = next;
     state.events.add(event);
     state.sessions = sessions;
+    if (formal) {
+      state.notebook = notebook;
+      state.notebookProgress = notebookProgress;
+    }
   });
 
   Future<String?> recordNotification(String id, {DateTime? scheduledAt}) async {

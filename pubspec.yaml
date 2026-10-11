@@ -1,7 +1,7 @@
 name: wordnest
 description: "词栖 · 本地优先的轻量记词工具"
 publish_to: none
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ^3.13.5
@@ -36,7 +36,10 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/demo.json
+    - assets/cet4-kylebing.txt
+    - assets/KYLEBING-LICENSE.txt
+    - assets/cet4-kylebing.provenance.json
+    - assets/catalog-manifest.json
     - assets/dictionary.json
     - assets/ECDICT-LICENSE.txt
     - assets/tray.ico
@@ -45,5 +48,5 @@ msix_config:
   display_name: 词栖 WordNest
   publisher_display_name: WordNest
   identity_name: io.wordnest.wordnest
-  msix_version: 0.2.0.0
+  msix_version: 0.3.0.0
   capabilities: internetClient

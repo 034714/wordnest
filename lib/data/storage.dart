@@ -16,8 +16,11 @@ abstract class AppStorage {
     LearningEvent event, {
     Map<String, Map<String, dynamic>>? sessions,
     String? activeSessionMode,
+    Set<String>? notebook,
+    Map<String, int>? notebookProgress,
   });
   Future<void> saveSettings(AppSettings settings);
+  Future<void> saveNotebook(Set<String> ids, Map<String, int> progress);
   Future<void> saveSessions(
     Map<String, Map<String, dynamic>> sessions, {
     required String activeSessionMode,
@@ -26,6 +29,12 @@ abstract class AppStorage {
   Future<void> importBook(ImportPreview preview);
   Future<void> deleteBook(String id);
   Future<void> dispose();
+}
+
+AppSnapshot normalizePortableAppearance(AppSnapshot snapshot) {
+  final portable = snapshot.clone();
+  portable.settings.backgroundAsset = '';
+  return portable;
 }
 
 /// JSON backup codec shared by database replacement, export, and restore.
@@ -75,6 +84,8 @@ class BackupCodec {
         'cards',
         'events',
         'notes',
+        'notebook',
+        'notebookProgress',
         'settings',
         'session',
         'sessions',
@@ -102,6 +113,11 @@ class BackupCodec {
     json['settings'] = migrateSettings(
       _expectMap(json['settings'], 'settings'),
     );
+    // Legacy backups predate the notebook; only absent keys are coerced.
+    if (!json.containsKey('notebook')) json['notebook'] = <String>[];
+    if (!json.containsKey('notebookProgress')) {
+      json['notebookProgress'] = <String, dynamic>{};
+    }
     migrateSessions(json);
     _validateRawLists(json);
     try {
@@ -195,7 +211,7 @@ class BackupCodec {
     final notes = _expectMap(json['notes'], 'notes');
     final settings = _expectMap(json['settings'], 'settings');
     _validateRawBooks(books);
-    _validateRawEntries(entries);
+    final entryIds = _validateRawEntries(entries);
     _validateRawCards(cards);
     _validateRawEvents(events);
     for (final entry in notes.entries) {
@@ -203,8 +219,75 @@ class BackupCodec {
         throw const FormatException('备份内容错误：notes必须是字符串到字符串的映射');
       }
     }
+    _validateRawNotebook(json['notebook'], entryIds);
+    _validateRawNotebookProgress(json['notebookProgress'], entryIds);
     _validateRawSettings(settings);
     _validateRawSessions(json);
+  }
+
+  /// Serialized stored form of the notebook; sorted so rows are deterministic.
+  static Map<String, dynamic> _notebookPayload(
+    Set<String> ids,
+    Map<String, int> progress,
+  ) => {
+    'ids': (ids.toList()..sort()),
+    'progress': {
+      for (final id in (progress.keys.toList()..sort())) id: progress[id]!,
+    },
+  };
+
+  /// Strict notebook member list: strings, no duplicates, existing entries.
+  static void _validateRawNotebook(dynamic value, Set<String> entries) {
+    if (value is! List) {
+      throw const FormatException('备份内容错误：notebook必须是数组');
+    }
+    if (value.length > maxEntries) {
+      throw const FormatException('备份内容错误：notebook数量超过限制');
+    }
+    final ids = <String>{};
+    for (final item in value) {
+      if (item is! String || item.trim().isEmpty || !ids.add(item)) {
+        throw const FormatException('备份内容错误：notebook包含重复或无效的单词ID');
+      }
+      if (!entries.contains(item)) {
+        throw FormatException('备份内容错误：notebook引用了不存在的单词$item');
+      }
+    }
+  }
+
+  /// Strict per-word consecutive-correct counters for notebook members.
+  static void _validateRawNotebookProgress(dynamic value, Set<String> entries) {
+    if (value is! Map) {
+      throw const FormatException('备份内容错误：notebookProgress必须是对象');
+    }
+    if (value.length > maxEntries) {
+      throw const FormatException('备份内容错误：notebookProgress数量超过限制');
+    }
+    for (final item in value.entries) {
+      final id = item.key;
+      if (id is! String || id.trim().isEmpty || !entries.contains(id)) {
+        throw const FormatException('备份内容错误：notebookProgress引用了不存在的单词');
+      }
+      final count = item.value;
+      if (count is! int || count < 0) {
+        throw const FormatException('备份内容错误：notebookProgress计数无效');
+      }
+    }
+  }
+
+  /// One JSON settings row holding the whole notebook state.
+  static void _validateRawNotebookState(
+    Map<String, dynamic> state,
+    Set<String> entries,
+  ) {
+    _validateKeys(
+      state,
+      {'ids', 'progress'},
+      'notebook',
+      required: {'ids', 'progress'},
+    );
+    _validateRawNotebook(state['ids'], entries);
+    _validateRawNotebookProgress(state['progress'], entries);
   }
 
   static void _validateRawSessions(Map<String, dynamic> json) {
@@ -284,7 +367,7 @@ class BackupCodec {
     }
   }
 
-  static void _validateRawEntries(List<dynamic> entries) {
+  static Set<String> _validateRawEntries(List<dynamic> entries) {
     final ids = <String>{};
     const fields = [
       'id',
@@ -313,6 +396,7 @@ class BackupCodec {
         throw const FormatException('备份内容错误：存在空单词');
       }
     }
+    return ids;
   }
 
   static void _validateRawCards(List<dynamic> cards) {
@@ -372,6 +456,10 @@ class BackupCodec {
       'examDate',
       'learningOrder',
       'copyStyle',
+      'backgroundAsset',
+      'materialMode',
+      'navigationStyle',
+      'questionDirection',
     ];
     const ints = [
       'roundSize',
@@ -380,10 +468,13 @@ class BackupCodec {
       'optionCount',
       'reminderMinutes',
       'notificationLimit',
+      'navigationInset',
+      'navigationRadius',
       'startHour',
       'endHour',
       'widgetSeconds',
       'errorMinutes',
+      'notebookRemoveAfterCorrect',
     ];
     const bools = [
       'adaptive',
@@ -404,8 +495,17 @@ class BackupCodec {
       'autoTts',
       'typingReveal',
       'hotkeyEnabled',
+      'notebookAutoAddErrors',
     ];
-    final expected = {...strings, ...ints, ...bools, 'fontScale'};
+    final expected = {
+      ...strings,
+      ...ints,
+      ...bools,
+      'fontScale',
+      'accentArgb',
+      'backgroundOpacity',
+      'surfaceOpacity',
+    };
     _validateKeys(settings, expected, 'settings', required: expected);
     if (settings.length != expected.length) {
       throw const FormatException('备份内容错误：settings包含缺失或未知字段');
@@ -429,9 +529,30 @@ class BackupCodec {
         'endHour' => value >= 0 && value <= 24,
         'widgetSeconds' => value >= 5 && value <= 300,
         'errorMinutes' => value >= 1 && value <= 60,
+        'notebookRemoveAfterCorrect' => value >= 0 && value <= 10,
+        'navigationInset' => value >= 0 && value <= 48,
+        'navigationRadius' => value >= 0 && value <= 48,
         _ => false,
       };
       if (!valid) throw FormatException('备份内容错误：settings.$field超出范围');
+    }
+    final accent = _expectInt(settings, 'accentArgb', 'settings');
+    if (accent < 0xff000000 || accent > 0xffffffff) {
+      throw const FormatException('备份内容错误：settings.accentArgb必须是不透明颜色');
+    }
+    if (!isValidBackgroundAsset(settings['backgroundAsset'] as String)) {
+      throw const FormatException('备份内容错误：settings.backgroundAsset无效');
+    }
+    for (final field in ['backgroundOpacity', 'surfaceOpacity']) {
+      final value = settings[field];
+      final min = field == 'surfaceOpacity' ? .2 : 0;
+      if (value is! num || !value.isFinite || value < min || value > 1) {
+        throw FormatException('备份内容错误：settings.$field无效');
+      }
+    }
+    if (!['solid', 'glass'].contains(settings['materialMode']) ||
+        !['adaptive', 'floating'].contains(settings['navigationStyle'])) {
+      throw const FormatException('备份内容错误：settings外观枚举值无效');
     }
     final fontScale = settings['fontScale'];
     if (fontScale is! num ||
@@ -442,6 +563,7 @@ class BackupCodec {
     }
     if (!['plain', 'cute'].contains(settings['copyStyle']) ||
         !['light', 'dark', 'system'].contains(settings['theme']) ||
+        !['en2zh', 'zh2en'].contains(settings['questionDirection']) ||
         ![
           'book',
           'reverse',
@@ -734,6 +856,8 @@ class BackupCodec {
         throw FormatException('备份内容错误：笔记引用了不存在的单词$key');
       }
     }
+    _validateRawNotebook(snapshot.notebook.toList(), entryIds);
+    _validateRawNotebookProgress(snapshot.notebookProgress, entryIds);
     final active = snapshot.settings.activeBookId;
     if (active.isNotEmpty && !bookIds.contains(active)) {
       throw FormatException('备份内容错误：当前词书不存在（$active）');
@@ -856,6 +980,8 @@ class MemoryStorage implements AppStorage {
     LearningEvent event, {
     Map<String, Map<String, dynamic>>? sessions,
     String? activeSessionMode,
+    Set<String>? notebook,
+    Map<String, int>? notebookProgress,
   }) async {
     _ensureOpen();
     if (!_snapshot.entries.containsKey(event.entryId) ||
@@ -873,6 +999,20 @@ class MemoryStorage implements AppStorage {
       next.sessions = _deepSessions(sessions);
       if (activeSessionMode != null) next.activeSessionMode = activeSessionMode;
     }
+    if (notebook != null) next.notebook = {...notebook};
+    if (notebookProgress != null) {
+      next.notebookProgress = {...notebookProgress};
+    }
+    BackupCodec._validate(next);
+    _snapshot = next;
+  }
+
+  @override
+  Future<void> saveNotebook(Set<String> ids, Map<String, int> progress) async {
+    _ensureOpen();
+    final next = _snapshot.clone();
+    next.notebook = {...ids};
+    next.notebookProgress = {...progress};
     BackupCodec._validate(next);
     _snapshot = next;
   }
@@ -945,6 +1085,8 @@ class MemoryStorage implements AppStorage {
     next.entries.removeWhere((key, _) => !referenced.contains(key));
     next.cards.removeWhere((key, _) => !referenced.contains(key));
     next.notes.removeWhere((key, _) => !referenced.contains(key));
+    next.notebook.removeWhere((id) => !referenced.contains(id));
+    next.notebookProgress.removeWhere((key, _) => !referenced.contains(key));
     next.events.removeWhere((event) => !referenced.contains(event.entryId));
     if (next.settings.activeBookId == id) {
       next.settings.activeBookId = next.books.firstOrNull?.id ?? '';
@@ -1145,6 +1287,7 @@ class SqliteStorage implements AppStorage {
       var settings = AppSettings();
       Map<String, dynamic>? legacySession;
       Map<String, dynamic>? sessionState;
+      Map<String, dynamic>? notebookState;
       final settingRows = await db.query('settings');
       for (final row in settingRows) {
         final payload = _decodeMap(row['payload']! as String, 'settings');
@@ -1155,18 +1298,35 @@ class SqliteStorage implements AppStorage {
         }
         if (row['key'] == 'session') legacySession = payload;
         if (row['key'] == 'sessions') sessionState = payload;
+        if (row['key'] == 'notebook') notebookState = payload;
       }
       final stored = <String, dynamic>{
         ...?sessionState,
         'session': ?legacySession,
       };
       BackupCodec.migrateSessions(stored);
+      // A legacy database has no notebook row; it loads as an empty notebook.
+      final notebook = <String>{};
+      final notebookProgress = <String, int>{};
+      if (notebookState != null) {
+        BackupCodec._validateRawNotebookState(
+          notebookState,
+          entries.keys.toSet(),
+        );
+        notebook.addAll((notebookState['ids'] as List).cast<String>());
+        notebookProgress.addAll({
+          for (final item in (notebookState['progress'] as Map).entries)
+            '${item.key}': item.value as int,
+        });
+      }
       final snapshot = AppSnapshot(
         books: books,
         entries: entries,
         cards: cards,
         events: events,
         notes: notes,
+        notebook: notebook,
+        notebookProgress: notebookProgress,
         settings: settings,
         sessions: (stored['sessions'] as Map)
             .cast<String, Map<String, dynamic>>(),
@@ -1198,6 +1358,8 @@ class SqliteStorage implements AppStorage {
     LearningEvent event, {
     Map<String, Map<String, dynamic>>? sessions,
     String? activeSessionMode,
+    Set<String>? notebook,
+    Map<String, int>? notebookProgress,
   }) async {
     _ensureOpen();
     await _db.transaction((txn) async {
@@ -1245,6 +1407,65 @@ class SqliteStorage implements AppStorage {
       if (sessions != null) {
         await _writeSessions(txn, sessions, activeSessionMode ?? 'quick');
       }
+      if (notebook != null || notebookProgress != null) {
+        final stored = await _readNotebook(txn);
+        await _writeNotebook(
+          txn,
+          notebook ?? stored.$1,
+          notebookProgress ?? stored.$2,
+        );
+      }
+    });
+  }
+
+  /// Stored notebook state; an absent row means an empty notebook.
+  static Future<(Set<String>, Map<String, int>)> _readNotebook(
+    DatabaseExecutor db,
+  ) async {
+    final rows = await db.query(
+      'settings',
+      where: 'key = ?',
+      whereArgs: ['notebook'],
+      limit: 1,
+    );
+    if (rows.isEmpty) return (<String>{}, <String, int>{});
+    final state = _decodeMap(rows.single['payload']! as String, 'notebook');
+    final entryIds = (await db.query(
+      'entries',
+      columns: ['id'],
+    )).map((row) => row['id']! as String).toSet();
+    BackupCodec._validateRawNotebookState(state, entryIds);
+    return (
+      (state['ids'] as List).cast<String>().toSet(),
+      {
+        for (final item in (state['progress'] as Map).entries)
+          '${item.key}': item.value as int,
+      },
+    );
+  }
+
+  static Future<void> _writeNotebook(
+    DatabaseExecutor db,
+    Set<String> ids,
+    Map<String, int> progress,
+  ) async {
+    final entryIds = (await db.query(
+      'entries',
+      columns: ['id'],
+    )).map((row) => row['id']! as String).toSet();
+    BackupCodec._validateRawNotebook(ids.toList(), entryIds);
+    BackupCodec._validateRawNotebookProgress(progress, entryIds);
+    await db.insert('settings', {
+      'key': 'notebook',
+      'payload': jsonEncode(BackupCodec._notebookPayload(ids, progress)),
+    }, conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  @override
+  Future<void> saveNotebook(Set<String> ids, Map<String, int> progress) async {
+    _ensureOpen();
+    await _db.transaction((txn) async {
+      await _writeNotebook(txn, ids, progress);
     });
   }
 
@@ -1477,6 +1698,15 @@ class SqliteStorage implements AppStorage {
     }
     await notesBatch.commit(noResult: true);
 
+    await db.insert('settings', {
+      'key': 'notebook',
+      'payload': jsonEncode(
+        BackupCodec._notebookPayload(
+          snapshot.notebook,
+          snapshot.notebookProgress,
+        ),
+      ),
+    });
     await db.insert('settings', {
       'key': 'app',
       'payload': jsonEncode(snapshot.settings.toJson()),

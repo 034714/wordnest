@@ -5,12 +5,15 @@ import 'package:wordnest/domain/models.dart';
 
 class FailingStorage extends MemoryStorage {
   bool fail = false;
+  bool failNotebook = false;
   @override
   Future<void> commitLearning(
     ReviewCard card,
     LearningEvent event, {
     Map<String, Map<String, dynamic>>? sessions,
     String? activeSessionMode,
+    Set<String>? notebook,
+    Map<String, int>? notebookProgress,
   }) {
     if (fail) throw StateError('disk full');
     return super.commitLearning(
@@ -18,7 +21,15 @@ class FailingStorage extends MemoryStorage {
       event,
       sessions: sessions,
       activeSessionMode: activeSessionMode,
+      notebook: notebook,
+      notebookProgress: notebookProgress,
     );
+  }
+
+  @override
+  Future<void> saveNotebook(Set<String> ids, Map<String, int> progress) {
+    if (failNotebook) throw StateError('disk full');
+    return super.saveNotebook(ids, progress);
   }
 }
 
@@ -287,5 +298,262 @@ void main() {
     expect(saved.session['history']['0']['optionLabels'], ['鸟', '苹果']);
     expect(saved.session['history']['0']['result']['correct'], true);
     expect(saved.events, hasLength(1));
+  });
+
+  group('notebook', () {
+    test(
+      'wrong formal answers auto-add and can be disabled by setting',
+      () async {
+        final c = await create();
+        expect(c.settings.notebookAutoAddErrors, isTrue);
+        expect(c.settings.notebookRemoveAfterCorrect, 2);
+        expect(c.settings.questionDirection, 'en2zh');
+        expect(c.notebookIds, isEmpty);
+
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        expect(c.isNotebook('a'), isTrue);
+        expect(c.notebookIds, {'a'});
+        expect(c.state.notebookProgress, isEmpty);
+
+        // Self/view/typing never change membership, even with correct=false.
+        for (final kind in ['view', 'self', 'typing']) {
+          await c.review(
+            'b',
+            kind: kind,
+            correct: false,
+            advanceSession: false,
+          );
+        }
+        expect(c.notebookIds, {'a'});
+
+        await c.updateSettings((s) => s.notebookAutoAddErrors = false);
+        await c.review(
+          'b',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        expect(c.notebookIds, {'a'});
+      },
+    );
+
+    test(
+      'a formal correct streak removes the member at the threshold',
+      () async {
+        final c = await create();
+        await c.updateSettings((s) => s.notebookRemoveAfterCorrect = 3);
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: true,
+          advanceSession: false,
+        );
+        expect(c.state.notebookProgress['a'], 1);
+
+        // A wrong formal answer resets the streak instead of removing the word.
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        expect(c.state.notebookProgress.containsKey('a'), isFalse);
+        expect(c.isNotebook('a'), isTrue);
+
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: true,
+          advanceSession: false,
+        );
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: true,
+          advanceSession: false,
+        );
+        expect(c.state.notebookProgress['a'], 2);
+        expect(c.isNotebook('a'), isTrue);
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: true,
+          advanceSession: false,
+        );
+        expect(c.isNotebook('a'), isFalse);
+        expect(c.state.notebookProgress.containsKey('a'), isFalse);
+      },
+    );
+
+    test(
+      'notebookRemoveAfterCorrect 0 never removes and stores no counter',
+      () async {
+        final c = await create();
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        await c.updateSettings((s) => s.notebookRemoveAfterCorrect = 0);
+        for (var i = 0; i < 4; i++) {
+          await c.review(
+            'a',
+            kind: 'formal',
+            correct: true,
+            advanceSession: false,
+          );
+        }
+        expect(c.isNotebook('a'), isTrue);
+        expect(c.state.notebookProgress, isEmpty);
+
+        await c.updateSettings((s) => s.notebookRemoveAfterCorrect = 1);
+        await c.review('a', kind: 'view', advanceSession: false);
+        expect(c.isNotebook('a'), isTrue);
+        expect(c.state.notebookProgress, isEmpty);
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: true,
+          advanceSession: false,
+        );
+        expect(c.isNotebook('a'), isFalse);
+      },
+    );
+
+    test(
+      'toggle and explicit membership changes persist across reopen',
+      () async {
+        final storage = MemoryStorage();
+        final c = await create(storage);
+        expect(await c.toggleNotebook('b'), isTrue);
+        expect(c.isNotebook('b'), isTrue);
+        expect(await c.addToNotebook('a'), isTrue);
+        expect(c.notebookIds, {'a', 'b'});
+
+        final next = AppController(storage);
+        await next.initialize();
+        expect(next.notebookIds, {'a', 'b'});
+        expect(await next.toggleNotebook('b'), isTrue);
+        expect(next.notebookIds, {'a'});
+        expect(await next.removeFromNotebook('a'), isTrue);
+        expect(next.notebookIds, isEmpty);
+
+        final again = AppController(storage);
+        await again.initialize();
+        expect(again.notebookIds, isEmpty);
+        expect(await again.addToNotebook('missing'), isFalse);
+        expect(again.notebookIds, isEmpty);
+        expect(again.error, contains('不存在'));
+      },
+    );
+
+    test('notebookEntries orders by active book then other sources', () async {
+      final c = await create();
+      await c.importBook(
+        ImportPreview(
+          book: WordBook(
+            id: 'extra',
+            title: '补充',
+            importedAt: DateTime.now(),
+            members: const [
+              BookMember(entryId: 'c', unit: 'U1', position: 0),
+              BookMember(entryId: 'd', unit: 'U1', position: 1),
+            ],
+          ),
+          entries: const {
+            'c': WordEntry(id: 'c', word: 'cat', meaning: '猫'),
+            'd': WordEntry(id: 'd', word: 'dog', meaning: '狗'),
+          },
+          total: 2,
+          duplicates: 0,
+          missingMeanings: 0,
+          missingExamples: 2,
+        ),
+      );
+      await c.updateSettings((s) => s.activeBookId = 'book');
+      for (final id in ['d', 'c', 'b', 'a']) {
+        await c.addToNotebook(id);
+      }
+      expect(c.notebookEntries.map((e) => e.id).toList(), ['a', 'b', 'c', 'd']);
+      expect(c.notebookEntries.map((e) => e.id).toList(), ['a', 'b', 'c', 'd']);
+      await c.removeFromNotebook('a');
+      expect(c.notebookEntries.map((e) => e.id).toList(), ['b', 'c', 'd']);
+    });
+
+    test(
+      'wrong formal events are newest first, limited and day-grouped',
+      () async {
+        final c = await create();
+        await c.review(
+          'a',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        await c.review(
+          'b',
+          kind: 'formal',
+          correct: true,
+          advanceSession: false,
+        );
+        await c.review(
+          'b',
+          kind: 'formal',
+          correct: false,
+          advanceSession: false,
+        );
+        expect(c.wrongFormalEvents().map((e) => e.entryId).toList(), [
+          'b',
+          'a',
+        ]);
+        expect(c.wrongFormalEvents(limit: 1).single.entryId, 'b');
+        expect(c.wrongFormalEvents(limit: 0), isEmpty);
+        final grouped = c.wrongFormalEventsByDay();
+        expect(grouped.values.single.map((e) => e.entryId).toList(), [
+          'b',
+          'a',
+        ]);
+      },
+    );
+
+    test(
+      'failed notebook writes keep membership and report the error',
+      () async {
+        final storage = FailingStorage();
+        final c = await create(storage);
+        storage.failNotebook = true;
+        expect(await c.addToNotebook('a'), isFalse);
+        expect(c.notebookIds, isEmpty);
+        expect(c.error, contains('保存失败'));
+        storage.failNotebook = false;
+        expect(await c.addToNotebook('a'), isTrue);
+        expect(c.notebookIds, {'a'});
+
+        storage.fail = true;
+        expect(
+          await c.review(
+            'b',
+            kind: 'formal',
+            correct: false,
+            advanceSession: false,
+          ),
+          isFalse,
+        );
+        expect(c.notebookIds, {'a'});
+        expect(c.state.events, isEmpty);
+      },
+    );
   });
 }

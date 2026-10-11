@@ -27,6 +27,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   String selectedMode = 'quick';
   int? count;
+
+  bool _resumeFor(AppController c, String mode) => c.resumableInMode(mode);
   AppController get controller => widget.controller;
   DesktopService get desktop => widget.desktop;
   VoidCallback get onLibrary => widget.onLibrary;
@@ -36,13 +38,13 @@ class _HomePageState extends State<HomePage> {
       await widget.onStartRound!(
         mode,
         resume: resume,
-        limit: count ?? controller.settings.roundSize,
+        limit: resume ? null : count ?? controller.settings.roundSize,
       );
     } else {
       await controller.begin(
         mode,
         resume: resume,
-        limit: count ?? controller.settings.roundSize,
+        limit: resume ? null : count ?? controller.settings.roundSize,
       );
       await widget.onStart(mode);
     }
@@ -225,45 +227,21 @@ class _HomePageState extends State<HomePage> {
                                     ? null
                                     : c.book == null
                                     ? onLibrary
-                                    : c.resumable
-                                    ? () => onStart(c.sessionMode, resume: true)
-                                    : () => onStart(selectedMode),
+                                    : () => onStart(selectedMode, resume: true),
                                 icon: Icon(
                                   c.book == null
                                       ? Icons.download_rounded
-                                      : c.resumable
-                                      ? Icons.history_rounded
                                       : Icons.play_arrow_rounded,
                                   size: 22,
                                 ),
                                 label: Text(
                                   c.book == null
                                       ? '导入我的词书'
-                                      : c.resumable
+                                      : _resumeFor(c, selectedMode)
                                       ? copy.resume
                                       : copy.start,
                                 ),
                               ),
-                              if (c.book != null && c.resumable)
-                                OutlinedButton.icon(
-                                  onPressed: c.saving
-                                      ? null
-                                      : () => onStart(selectedMode),
-                                  icon: const Icon(
-                                    Icons.play_arrow_rounded,
-                                    size: 20,
-                                  ),
-                                  label: Text(copy.start),
-                                ),
-                              if (c.book != null)
-                                TextButton.icon(
-                                  onPressed: () => onStart('formal'),
-                                  icon: const Icon(
-                                    Icons.task_alt_rounded,
-                                    size: 19,
-                                  ),
-                                  label: const Text('来一道验证题'),
-                                ),
                             ],
                           ),
                         ],
@@ -466,18 +444,11 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               const SizedBox(height: 26),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final narrow = constraints.maxWidth < 650;
-                  final items = [
-                    _entry(
-                      context,
-                      '键盘强化',
-                      '逐字输入，跟写或回忆拼写。',
-                      Icons.keyboard_alt_outlined,
-                      () => onStart('typing'),
-                    ),
-                    if (desktop.isDesktop)
+              if (desktop.isDesktop)
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final narrow = constraints.maxWidth < 650;
+                    final items = [
                       _entry(
                         context,
                         '桌面小窗',
@@ -485,27 +456,27 @@ class _HomePageState extends State<HomePage> {
                         Icons.picture_in_picture_alt_outlined,
                         onWidget,
                       ),
-                  ];
-                  return narrow
-                      ? Column(
-                          children: [
-                            for (final item in items)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 12),
-                                child: item,
-                              ),
-                          ],
-                        )
-                      : Row(
-                          children: [
-                            for (var i = 0; i < items.length; i++) ...[
-                              if (i > 0) const SizedBox(width: 16),
-                              Expanded(child: items[i]),
+                    ];
+                    return narrow
+                        ? Column(
+                            children: [
+                              for (final item in items)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 12),
+                                  child: item,
+                                ),
                             ],
-                          ],
-                        );
-                },
-              ),
+                          )
+                        : Row(
+                            children: [
+                              for (var i = 0; i < items.length; i++) ...[
+                                if (i > 0) const SizedBox(width: 16),
+                                Expanded(child: items[i]),
+                              ],
+                            ],
+                          );
+                  },
+                ),
               const SizedBox(height: 24),
               Text(
                 '轻量浏览 ≠ 无提示回忆。正式答题的结果，才用于计算正确率。',

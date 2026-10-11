@@ -6,6 +6,8 @@ import 'package:wordnest/platform/catalog_service.dart';
 import 'package:wordnest/platform/update_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('catalog lists only allowlisted verified HTTPS sources', () async {
     final books = await CatalogService().list();
     expect(books, isNotEmpty);
@@ -16,15 +18,13 @@ void main() {
       expect(book.url.host, 'raw.githubusercontent.com');
       expect(book.license, isNotEmpty);
       expect(book.source, isNotEmpty);
-      expect(book.filename, endsWith('.txt'));
+      expect(book.filename, anyOf(endsWith('.txt'), endsWith('.json')));
       expect(book.maxBytes, lessThanOrEqualTo(CatalogService.hardMaxBytes));
       expect(() => validateUpdateUrl(book.url.toString()), returnsNormally);
       expect(book.isBuiltin, isTrue);
     }
-    final dwyl = books.firstWhere((b) => b.id == 'english-words-alpha');
-    expect(dwyl.license, contains('Unlicense'));
-    expect(dwyl.source, 'dwyl/english-words');
-    expect(dwyl.description, contains('没有释义'));
+    // Word-only lists are gone: every catalog book must carry meanings.
+    expect(books.where((b) => b.id.contains('words-alpha')), isEmpty);
   });
 
   test(
@@ -58,25 +58,28 @@ void main() {
       expect(cet4.url.pathSegments.last, '3 四级-乱序.txt');
       expect(
         cet4.url.toString(),
-        'https://raw.githubusercontent.com/KyleBing/english-vocabulary/master/3%20%E5%9B%9B%E7%BA%A7-%E4%B9%B1%E5%BA%8F.txt',
+        'https://raw.githubusercontent.com/KyleBing/english-vocabulary/'
+        '${CatalogService.kylebingRevision}/'
+        '3%20%E5%9B%9B%E7%BA%A7-%E4%B9%B1%E5%BA%8F.txt',
       );
     },
   );
 
   test('fetch returns text and filename through injected transport', () async {
+    const payload = 'apple\tn. 苹果\nbanana\tn. 香蕉\n';
     final service = CatalogService(
       resolver: (_) async => [InternetAddress('8.8.8.8')],
       transport: (uri, address) async {
         expect(uri.host, 'raw.githubusercontent.com');
         expect(address.address, '8.8.8.8');
-        return FetchResponse(200, utf8.encode('apple\nbanana\ncherry\n'));
+        return FetchResponse(200, utf8.encode(payload));
       },
     );
     final book = (await service.list()).first;
     final download = await service.fetch(book);
     expect(download.filename, book.filename);
-    expect(download.text, 'apple\nbanana\ncherry\n');
-    expect(download.byteLength, 20);
+    expect(download.text, payload);
+    expect(download.byteLength, utf8.encode(payload).length);
     expect(download.book.id, book.id);
   });
 

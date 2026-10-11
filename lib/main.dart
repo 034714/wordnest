@@ -16,12 +16,15 @@ Future<void> main(List<String> args) async {
     yield LicenseEntryWithLineBreaks([
       'ECDICT',
     ], await rootBundle.loadString('assets/ECDICT-LICENSE.txt'));
+    yield LicenseEntryWithLineBreaks([
+      'KyleBing/english-vocabulary',
+    ], await rootBundle.loadString('assets/KYLEBING-LICENSE.txt'));
   });
   try {
     final storage = await SqliteStorage.open();
     final controller = AppController(storage);
     await controller.initialize();
-    await ensureDemoBook(controller);
+    await ensurePersonalBook(controller);
     runApp(WordNestApp(controller: controller));
   } catch (error) {
     runApp(

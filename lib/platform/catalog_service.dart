@@ -3,14 +3,13 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
+import 'package:flutter/services.dart';
+
+import '../data/importer.dart';
 import 'safe_http.dart';
 
-/// One allowlisted public word list. Entries are compile-time constants:
-/// v1 never accepts a user-supplied catalog URL. Every source repository's
-/// license was verified through the GitHub license API before inclusion:
-/// `KyleBing/english-vocabulary` (BSD-3-Clause), `dwyl/english-words`
-/// (Unlicense/public domain), `wordnik/wordlist` (MIT) and
-/// `tabatkins/wordle-list` (MIT).
+/// An immutable, pinned source record. Source verification is not permission
+/// to redistribute: Jimmy entries explicitly retain an unknown-license notice.
 class CatalogBook {
   const CatalogBook({
     required this.id,
@@ -22,26 +21,28 @@ class CatalogBook {
     required this.license,
     required this.source,
     required this.attribution,
+    this.category = '',
+    this.scene = '',
+    this.wordCount = 0,
+    this.chapterCount = 0,
+    this.revision = '',
+    this.redistributionKnown = false,
+    this.countsVerified = false,
   });
 
-  final String id;
-  final String title;
-  final String description;
+  final String id, title, description, filename, license, source, attribution;
+  final String category, scene, revision;
   final Uri url;
-  final String filename;
-  final int maxBytes;
-  final String license;
-  final String source;
+  final int maxBytes, wordCount, chapterCount;
+  final bool redistributionKnown, countsVerified;
 
-  /// Display-ready credit line: repository, license and repository URL.
-  final String attribution;
+  /// Only canonical records loaded from the bundled manifest are trusted.
+  /// Copying an id/URL does not grant caller-controlled metadata any authority.
+  bool get isBuiltin => CatalogService.books.contains(this);
 
-  /// True when this exact entry (id and URL) is in the built-in catalog.
-  bool get isBuiltin =>
-      CatalogService.books.any((b) => b.id == id && b.url == url);
+  Uri get sourceUrl => Uri.https('github.com', '/$source/blob/$revision/${url.pathSegments.skip(3).join('/')}');
 }
 
-/// Downloaded word list text plus the filename the importer should see.
 class CatalogDownload {
   const CatalogDownload({
     required this.book,
@@ -49,14 +50,11 @@ class CatalogDownload {
     required this.text,
     required this.byteLength,
   });
-
   final CatalogBook book;
-  final String filename;
-  final String text;
+  final String filename, text;
   final int byteLength;
 }
 
-/// Chinese-language failure for catalog listing/downloading.
 class CatalogError implements Exception {
   const CatalogError(this.message);
   final String message;
@@ -64,11 +62,9 @@ class CatalogError implements Exception {
   String toString() => message;
 }
 
-/// Allowlisted word-list downloads reusing the same hardened transport rules
-/// as update checks: http/https only, pre-validated public DNS answers only,
-/// direct pinned connections with TLS for https, no proxy, manual redirect
-/// validation, overall timeout and a bounded response body. Nothing is ever
-/// executed. Tests must inject resolver/transport; no network in tests.
+/// Downloads only pinned catalog sources, using the shared bounded, DNS/TLS
+/// validated transport (including its explicit trusted-host proxy fallback).
+/// Tests inject transport/resolver and never require a live network.
 class CatalogService {
   CatalogService({
     AddressResolver? resolver,
@@ -77,7 +73,6 @@ class CatalogService {
     ProxiedFetch? proxiedFetch,
     this.timeout = const Duration(seconds: 20),
   }) : _resolver = resolver ?? InternetAddress.lookup,
-       // Public named parameters cannot be private initializing formals.
        // ignore: prefer_initializing_formals
        _transport = transport,
        // ignore: prefer_initializing_formals
@@ -85,134 +80,78 @@ class CatalogService {
        // ignore: prefer_initializing_formals
        _proxiedFetch = proxiedFetch;
 
-  /// Hard cap for every catalog download, independent of the update feed
-  /// limit (64 KiB).
   static const hardMaxBytes = 8 * 1024 * 1024;
+  static const kylebingRevision = 'c4c6c80879ff17d7025c28fb853a4991c8e6be6a';
+  static const jimmyRevision = '4d42b54e73e163cb1121aefd0cdac3c243c7a414';
   static const _allowedHost = 'raw.githubusercontent.com';
-  static const _kylebing = 'KyleBing/english-vocabulary';
-  static const _kylebingAttribution =
-      'KyleBing/english-vocabulary · BSD-3-Clause · '
-      'https://github.com/KyleBing/english-vocabulary';
+  static List<CatalogBook> _books = const [];
+  static Future<List<CatalogBook>>? _loading;
 
-  static CatalogBook _kylebingBook({
-    required String id,
-    required String title,
-    required String description,
-    required String filename,
-    required int maxBytes,
-  }) => CatalogBook(
-    id: id,
-    title: title,
-    description: description,
-    url: Uri.parse(
-      'https://raw.githubusercontent.com/$_kylebing/master/'
-      '${Uri.encodeComponent(filename)}',
-    ),
-    filename: filename,
-    maxBytes: maxBytes,
-    license: 'BSD-3-Clause',
-    source: _kylebing,
-    attribution: _kylebingAttribution,
-  );
+  /// The immutable cached catalog, populated by list() without network access.
+  static List<CatalogBook> get books => _books;
 
-  /// Built-in catalog. The seven KyleBing lists are `单词<TAB>释义` lines and
-  /// import directly through the TXT importer. Sources without a verified
-  /// permissive license are deliberately excluded (for example
-  /// `zhenghaoyang24/english-vocabulary` reports no license, so it stays out).
-  static final List<CatalogBook> books = List.unmodifiable(<CatalogBook>[
-    _kylebingBook(
-      id: 'kylebing-junior',
-      title: '初中词汇（乱序）',
-      description: 'KyleBing 初中词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '1 初中-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    _kylebingBook(
-      id: 'kylebing-highschool',
-      title: '高中词汇（乱序）',
-      description: 'KyleBing 高中词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '2 高中-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    _kylebingBook(
-      id: 'kylebing-cet4',
-      title: '四级词汇（乱序）',
-      description: 'KyleBing 大学英语四级词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '3 四级-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    _kylebingBook(
-      id: 'kylebing-cet6',
-      title: '六级词汇（乱序）',
-      description: 'KyleBing 大学英语六级词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '4 六级-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    _kylebingBook(
-      id: 'kylebing-postgrad',
-      title: '考研词汇（乱序）',
-      description: 'KyleBing 考研词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '5 考研-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    _kylebingBook(
-      id: 'kylebing-toefl',
-      title: '托福词汇（乱序）',
-      description: 'KyleBing 托福词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '6 托福-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    _kylebingBook(
-      id: 'kylebing-sat',
-      title: 'SAT 词汇（乱序）',
-      description: 'KyleBing SAT 词表：每行“单词 + Tab + 释义”，可直接导入。',
-      filename: '7 SAT-乱序.txt',
-      maxBytes: 2 * 1024 * 1024,
-    ),
-    CatalogBook(
-      id: 'english-words-alpha',
-      title: '英语完整单词表（仅单词·无释义）',
-      description:
-          'dwyl/english-words 的 words_alpha.txt：约 37 万个纯字母英语单词，每行一个，没有释义。',
-      url: Uri.parse(
-        'https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt',
-      ),
-      filename: 'words_alpha.txt',
-      maxBytes: 6 * 1024 * 1024,
-      license: 'Unlicense（公有领域）',
-      source: 'dwyl/english-words',
-      attribution:
-          'dwyl/english-words · Unlicense（公有领域） · '
-          'https://github.com/dwyl/english-words',
-    ),
-    CatalogBook(
-      id: 'wordnik-wordlist',
-      title: 'Wordnik 英语常用词表（仅单词·无释义）',
-      description: 'wordnik/wordlist 的单词表：约 30 万条常见英语单词，每行一个，没有释义。',
-      url: Uri.parse(
-        'https://raw.githubusercontent.com/wordnik/wordlist/main/wordlist-20210729.txt',
-      ),
-      filename: 'wordlist-20210729.txt',
-      maxBytes: 4 * 1024 * 1024,
-      license: 'MIT',
-      source: 'wordnik/wordlist',
-      attribution:
-          'wordnik/wordlist · MIT · https://github.com/wordnik/wordlist',
-    ),
-    CatalogBook(
-      id: 'wordle-five-letter',
-      title: '五个字母单词表（仅单词·无释义）',
-      description: 'tabatkins/wordle-list 的 words 文件：14855 个五个字母的英语单词，每行一个，没有释义，体积小，适合快速导入。',
-      url: Uri.parse(
-        'https://raw.githubusercontent.com/tabatkins/wordle-list/main/words',
-      ),
-      filename: 'wordle-words.txt',
-      maxBytes: 512 * 1024,
-      license: 'MIT',
-      source: 'tabatkins/wordle-list',
-      attribution: 'tabatkins/wordle-list · MIT · https://github.com/tabatkins/wordle-list',
-    ),
-  ]);
+  static Future<List<CatalogBook>> _loadManifest() async {
+    try {
+      final root = jsonDecode(await rootBundle.loadString('assets/catalog-manifest.json')) as Map<String, dynamic>;
+      if (root['format'] != 1) throw const FormatException('目录版本不受支持');
+      final result = <CatalogBook>[];
+      final ids = <String>{};
+      for (final kind in ['kylebing', 'jimmy']) {
+        final group = root[kind] as Map<String, dynamic>;
+        final kyle = kind == 'kylebing';
+        final repo = kyle ? 'KyleBing/english-vocabulary' : 'Jimmy-Library/Jimmy-Grammar';
+        final revision = kyle ? kylebingRevision : jimmyRevision;
+        if (group['repository'] != repo || group['revision'] != revision ||
+            group['license'] != (kyle ? 'BSD-3-Clause' : 'unknown')) {
+          throw const FormatException('目录来源或版本不匹配');
+        }
+        for (final record in group['books'] as List) {
+          final item = record as Map<String, dynamic>;
+          final id = item['id'] as String;
+          final path = item['path'] as String;
+          final filename = item['filename'] as String;
+          final words = item['wordCount'] as int;
+          final chapters = item['chapterCount'] as int;
+          final bytes = item['byteLength'] as int;
+          if (!ids.add(id) || !id.startsWith('$kind-') ||
+              path.startsWith('/') || path.contains('\\') ||
+              path.split('/').any((part) => part.isEmpty || part == '..' || part == '.') ||
+              filename != path.split('/').last ||
+              !(kyle ? path.endsWith('.txt') : path.startsWith('wordbooks/') && path.endsWith('.json')) ||
+              words <= 0 || words > ImportParser.maxRecords || chapters <= 0 ||
+              bytes <= 0 || bytes > hardMaxBytes) {
+            throw const FormatException('目录词书记录无效');
+          }
+          final license = kyle ? 'BSD-3-Clause' : '再分发许可未确认';
+          result.add(CatalogBook(
+            id: id,
+            title: item['title'] as String,
+            description: kyle
+                ? '每行“单词 + Tab + 释义”；完整原文件，重复位置保留。'
+                : '原站章节 JSON（单词/释义）；数量来自上游索引，导入前检查实际缺项。',
+            url: Uri.https(_allowedHost, '/$repo/$revision/$path'),
+            filename: filename,
+            maxBytes: kyle ? 2 * 1024 * 1024 : hardMaxBytes,
+            license: license,
+            source: repo,
+            attribution: '$repo · ${kyle ? 'Copyright (c) 2022-2026, KyleBing' : 'Jimmy · 青山沃思'} · $license · https://github.com/$repo',
+            category: item['category'] as String,
+            scene: item['scene'] as String,
+            wordCount: words,
+            chapterCount: chapters,
+            revision: revision,
+            redistributionKnown: kyle,
+            countsVerified: kyle,
+          ));
+        }
+      }
+      _books = List.unmodifiable(result);
+      return _books;
+    } catch (error) {
+      _loading = null;
+      throw CatalogError('内置词库目录无法读取：$error');
+    }
+  }
 
   final AddressResolver _resolver;
   final PinnedFetch? _transport;
@@ -220,24 +159,21 @@ class CatalogService {
   final ProxiedFetch? _proxiedFetch;
   final Duration timeout;
 
-  /// Allowlisted entries only. No network request is made by this call.
-  Future<List<CatalogBook>> list() async => books;
+  Future<List<CatalogBook>> list() => _loading ??= _loadManifest();
 
-  /// Downloads one allowlisted book through the hardened transport and
-  /// returns decoded text and the filename for the existing importer.
   Future<CatalogDownload> fetch(CatalogBook book, {int? maxBytes}) async {
-    final allowed = books.where((b) => b.id == book.id && b.url == book.url);
-    if (allowed.isEmpty) {
-      throw const CatalogError('该词表不在内置目录中，v1 只允许内置词表来源。');
+    final entries = await list();
+    if (!entries.contains(book)) {
+      throw const CatalogError('该词表不在内置目录中，只允许内置原始来源记录。');
     }
-    final entry = allowed.first;
-    if (entry.url.host != _allowedHost || entry.url.scheme != 'https') {
+    if (book.url.host != _allowedHost || book.url.scheme != 'https') {
       throw const CatalogError('词表来源不是允许的 HTTPS 地址。');
     }
-    final limit = math.min(maxBytes ?? entry.maxBytes, hardMaxBytes);
+    final limit = math.min(math.min(maxBytes ?? book.maxBytes, book.maxBytes), hardMaxBytes);
+    if (limit <= 0) throw const CatalogError('下载大小限制必须大于零。');
     try {
       final response = await safeHttpGet(
-        uri: entry.url,
+        uri: book.url,
         resolver: _resolver,
         timeout: timeout,
         maxBodyBytes: limit,
@@ -252,15 +188,12 @@ class CatalogService {
         throw const CatalogError('下载内容超过大小限制。');
       }
       final text = utf8.decode(response.body);
-      if (text.trim().isEmpty) {
-        throw const CatalogError('下载的词表内容为空。');
+      if (text.trim().isEmpty) throw const CatalogError('下载的词表内容为空。');
+      final preview = ImportParser.parse(text, book.filename);
+      if (preview.missingMeanings == preview.entries.length) {
+        throw const CatalogError('下载的词书没有释义，不能作为学习词书导入。');
       }
-      return CatalogDownload(
-        book: entry,
-        filename: entry.filename,
-        text: text,
-        byteLength: response.body.length,
-      );
+      return CatalogDownload(book: book, filename: book.filename, text: text, byteLength: response.body.length);
     } on CatalogError {
       rethrow;
     } on FakeIpDnsException catch (error) {

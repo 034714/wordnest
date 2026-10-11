@@ -187,7 +187,14 @@ void main() {
       await save('home-dark');
       final app = tester.widget<MaterialApp>(find.byType(MaterialApp));
 
-      await tester.tap(find.text('来一道验证题'));
+      // Formal mode now starts from the mode chip + primary button.
+      await tester.tap(find.text('回忆验证'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.textContaining(
+          RegExp('开始新一轮|继续上次学习|开启一小轮|接着上次的小脚印'),
+        ),
+      );
       await tester.pumpAndSettle();
       expect(find.byType(StudyPage), findsOneWidget);
       expect(controller.sessionMode, 'formal');

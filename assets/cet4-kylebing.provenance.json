@@ -1,0 +1,20 @@
+{
+  "format": 1,
+  "asset": "assets/cet4-kylebing.txt",
+  "repository": "KyleBing/english-vocabulary",
+  "revision": "c4c6c80879ff17d7025c28fb853a4991c8e6be6a",
+  "path": "3 四级-乱序.txt",
+  "url": "https://raw.githubusercontent.com/KyleBing/english-vocabulary/c4c6c80879ff17d7025c28fb853a4991c8e6be6a/3%20%E5%9B%9B%E7%BA%A7-%E4%B9%B1%E5%BA%8F.txt",
+  "retrieved": "2026-10-11",
+  "license": "BSD-3-Clause",
+  "attribution": "Copyright (c) 2022-2026, KyleBing",
+  "wordCount": 7508,
+  "uniqueWordCount": 4543,
+  "chapterCount": 1,
+  "byteLength": 293401,
+  "sha256": "b6ef93b392837bfad92467ed6a8b3f22da6caf07fcfe8858c4f9eccb72069835",
+  "completeUpstreamFile": true,
+  "meaningFormat": "UTF-8 word<TAB>meaning; every nonempty row verified to have a meaning",
+  "licenseUrl": "https://raw.githubusercontent.com/KyleBing/english-vocabulary/c4c6c80879ff17d7025c28fb853a4991c8e6be6a/LICENSE",
+  "licenseSha256": "5746ff57c9bb587018a73c030e57ba8d116c0b9843c0617c88dde9c21757b2d2"
+}

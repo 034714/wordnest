@@ -11,6 +11,8 @@ class ImportParser {
     String text,
     String filename, {
     Map<String, int>? csvMapping,
+    String? title,
+    String? source,
   }) {
     if (utf8.encode(text).length > maxBytes) {
       throw const FormatException('文件过大，导入文件不能超过20MB');
@@ -18,13 +20,28 @@ class ImportParser {
     if (text.startsWith('\uFEFF')) text = text.substring(1);
     final name = _fileName(filename);
     final lower = name.toLowerCase();
-    if (lower.endsWith('.json')) {
-      return _json(text, name);
-    }
-    if (lower.endsWith('.csv')) {
-      return _csv(text, name, csvMapping);
-    }
-    return _txt(text, name);
+    final preview = lower.endsWith('.json')
+        ? _json(text, name)
+        : lower.endsWith('.csv')
+        ? _csv(text, name, csvMapping)
+        : _txt(text, name);
+    if (title == null && source == null) return preview;
+    // Catalog attribution belongs to the imported book, not its filename.
+    return ImportPreview(
+      book: WordBook(
+        id: preview.book.id,
+        title: title ?? preview.book.title,
+        source: source ?? preview.book.source,
+        members: preview.book.members,
+        importedAt: preview.book.importedAt,
+      ),
+      entries: preview.entries,
+      total: preview.total,
+      duplicates: preview.duplicates,
+      missingMeanings: preview.missingMeanings,
+      missingExamples: preview.missingExamples,
+      warnings: preview.warnings,
+    );
   }
 
   static String exportCsv(WordBook book, Map<String, WordEntry> entries) {

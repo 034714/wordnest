@@ -120,6 +120,21 @@ void main() {
       'unknown setting': (j) => j['settings']['surprise'] = true,
       'clamped setting': (j) => j['settings']['roundSize'] = 0,
       'wrong setting type': (j) => j['settings']['notifications'] = 'yes',
+      'notebook auto-add type': (j) =>
+          j['settings']['notebookAutoAddErrors'] = 'yes',
+      'clamped notebook removal': (j) =>
+          j['settings']['notebookRemoveAfterCorrect'] = 11,
+      'negative notebook removal': (j) =>
+          j['settings']['notebookRemoveAfterCorrect'] = -1,
+      'unknown question direction': (j) =>
+          j['settings']['questionDirection'] = 'zh2en2',
+      'duplicate notebook id': (j) => j['notebook'] = ['cat', 'cat'],
+      'orphan notebook id': (j) => j['notebook'] = ['missing'],
+      'invalid notebook type': (j) => j['notebook'] = 'cat',
+      'non-string notebook id': (j) => j['notebook'] = [7],
+      'string notebook progress': (j) => j['notebookProgress'] = {'cat': '1'},
+      'negative notebook progress': (j) => j['notebookProgress'] = {'cat': -1},
+      'orphan notebook progress': (j) => j['notebookProgress'] = {'missing': 1},
       'font scale out of range': (j) => j['settings']['fontScale'] = 99,
       'unknown theme': (j) => j['settings']['theme'] = 'invalid',
       'unknown order': (j) => j['settings']['learningOrder'] = 'invalid',
@@ -309,6 +324,79 @@ void main() {
     final invalid = _validSnapshot();
     invalid.settings.copyStyle = 'invalid';
     expect(() => BackupCodec.encode(invalid), throwsFormatException);
+  });
+
+  test('notebook settings default, migrate and round-trip', () {
+    final defaults = AppSettings();
+    expect(defaults.notebookAutoAddErrors, isTrue);
+    expect(defaults.notebookRemoveAfterCorrect, 2);
+    expect(defaults.questionDirection, 'en2zh');
+    expect(AppSettings.fromJson({}).questionDirection, 'en2zh');
+
+    for (final direction in ['en2zh', 'zh2en']) {
+      final snapshot = _validSnapshot();
+      snapshot.settings.questionDirection = direction;
+      snapshot.settings.notebookAutoAddErrors = false;
+      snapshot.settings.notebookRemoveAfterCorrect = 0;
+      final decoded = BackupCodec.decode(BackupCodec.encode(snapshot));
+      expect(decoded.settings.questionDirection, direction);
+      expect(decoded.settings.notebookAutoAddErrors, isFalse);
+      expect(decoded.settings.notebookRemoveAfterCorrect, 0);
+    }
+
+    final legacy = _validSnapshot().toJson();
+    (legacy['settings'] as Map<String, dynamic>)
+      ..remove('notebookAutoAddErrors')
+      ..remove('notebookRemoveAfterCorrect')
+      ..remove('questionDirection');
+    legacy.remove('notebook');
+    legacy.remove('notebookProgress');
+    final migrated = BackupCodec.decode(jsonEncode(legacy));
+    expect(migrated.settings.notebookAutoAddErrors, isTrue);
+    expect(migrated.settings.notebookRemoveAfterCorrect, 2);
+    expect(migrated.settings.questionDirection, 'en2zh');
+    expect(migrated.notebook, isEmpty);
+    expect(migrated.notebookProgress, isEmpty);
+    expect(legacy.containsKey('notebook'), isFalse);
+  });
+
+  test('notebook serializes sorted, round-trips and clone is isolated', () {
+    final snapshot = AppSnapshot(
+      books: [
+        WordBook(
+          id: 'book-1',
+          title: 'Book',
+          importedAt: DateTime.utc(2026),
+          members: const [
+            BookMember(entryId: 'cat', unit: 'unit 1', position: 1),
+            BookMember(entryId: 'ant', unit: 'unit 1', position: 2),
+          ],
+        ),
+      ],
+      entries: const {
+        'cat': WordEntry(id: 'cat', word: 'Cat', meaning: '猫'),
+        'ant': WordEntry(id: 'ant', word: 'Ant', meaning: '蚂蚁'),
+      },
+      notebook: {'cat', 'ant'},
+      notebookProgress: {'ant': 1},
+      settings: AppSettings(activeBookId: 'book-1'),
+    );
+    expect(snapshot.toJson()['notebook'], ['ant', 'cat']);
+    final restored = BackupCodec.decode(BackupCodec.encode(snapshot));
+    expect(restored.notebook, {'ant', 'cat'});
+    expect(restored.notebookProgress, {'ant': 1});
+
+    final clone = restored.clone();
+    clone.notebook.clear();
+    clone.notebookProgress.clear();
+    expect(restored.notebook, {'ant', 'cat'});
+    expect(restored.notebookProgress, {'ant': 1});
+
+    snapshot.notebook.add('missing');
+    expect(() => BackupCodec.encode(snapshot), throwsFormatException);
+    snapshot.notebook.remove('missing');
+    snapshot.notebookProgress['cat'] = -1;
+    expect(() => BackupCodec.encode(snapshot), throwsFormatException);
   });
 
   test('per-mode sessions migrate legacy backups and round-trip', () {
@@ -657,6 +745,105 @@ void main() {
         });
       },
     );
+
+    test('notebook persists per entry, migrates legacy rows and commits atomically', () async {
+      await _withFileStorage((storage, path) async {
+        await storage.replace(_validSnapshot());
+        await storage.saveNotebook({'cat'}, {'cat': 2});
+        await expectLater(
+          storage.saveNotebook({'missing'}, <String, int>{}),
+          throwsFormatException,
+        );
+        final saved = await storage.load();
+        expect(saved.notebook, {'cat'});
+        expect(saved.notebookProgress, {'cat': 2});
+        await storage.dispose();
+
+        var reopened = await SqliteStorage.open(databasePath: path);
+        try {
+          expect((await reopened.load()).notebook, {'cat'});
+          await reopened.commitLearning(
+            ReviewCard(
+              entryId: 'cat',
+              due: DateTime.utc(2026, 2),
+              seen: true,
+              reviews: 2,
+            ),
+            LearningEvent(
+              id: 'notebook-1',
+              entryId: 'cat',
+              kind: 'formal',
+              at: DateTime.utc(2026, 2),
+              correct: false,
+            ),
+            notebook: {'cat'},
+            notebookProgress: <String, int>{},
+          );
+          expect((await reopened.load()).notebookProgress, isEmpty);
+          await expectLater(
+            reopened.commitLearning(
+              ReviewCard(
+                entryId: 'cat',
+                due: DateTime.utc(2026, 3),
+                seen: true,
+              ),
+              LearningEvent(
+                id: 'notebook-orphan',
+                entryId: 'cat',
+                kind: 'formal',
+                at: DateTime.utc(2026, 3),
+                correct: false,
+              ),
+              notebook: {'missing'},
+            ),
+            throwsFormatException,
+          );
+          final after = await reopened.load();
+          expect(after.notebook, {'cat'});
+          expect(
+            after.events.map((event) => event.id),
+            isNot(contains('notebook-orphan')),
+          );
+        } finally {
+          await reopened.dispose();
+        }
+
+        final raw = await databaseFactoryFfi.openDatabase(
+          path,
+          options: OpenDatabaseOptions(singleInstance: false),
+        );
+        try {
+          await raw.delete(
+            'settings',
+            where: 'key = ?',
+            whereArgs: ['notebook'],
+          );
+        } finally {
+          await raw.close();
+        }
+        reopened = await SqliteStorage.open(databasePath: path);
+        try {
+          final legacy = await reopened.load();
+          expect(legacy.notebook, isEmpty);
+          expect(legacy.notebookProgress, isEmpty);
+        } finally {
+          await reopened.dispose();
+        }
+      });
+    });
+
+    test('deleting a book drops its notebook members and counters', () async {
+      await _withFileStorage((storage, path) async {
+        await storage.replace(_validSnapshot());
+        final incoming = ImportParser.parse('cat\t猫\ndog\t狗', 'two.txt');
+        await storage.importBook(incoming);
+        await storage.saveNotebook({'cat', 'dog'}, {'dog': 1});
+        await storage.deleteBook(incoming.book.id);
+        final saved = await storage.load();
+        expect(saved.notebook, {'cat'});
+        expect(saved.notebookProgress, isEmpty);
+      });
+    });
 
     test('batch failure rolls back replacement and atomic import activeBook; enforces foreign keys', () async {
       await _withFileStorage((storage, path) async {

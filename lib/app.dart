@@ -11,13 +11,21 @@ import 'features/study_page.dart';
 import 'features/library_page.dart';
 import 'features/stats_page.dart';
 import 'features/settings_page.dart';
+import 'features/shared_widgets.dart';
+import 'platform/appearance_service.dart';
 import 'platform/desktop_service.dart';
 import 'platform/update_service.dart';
 
 class WordNestApp extends StatefulWidget {
-  const WordNestApp({super.key, required this.controller, this.native = true});
+  const WordNestApp({
+    super.key,
+    required this.controller,
+    this.native = true,
+    this.appearanceService,
+  });
   final AppController controller;
   final bool native;
+  final AppearanceService? appearanceService;
   @override
   State<WordNestApp> createState() => _WordNestAppState();
 }
@@ -33,10 +41,56 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
   bool compact = false, paused = false, _notifying = false;
   Timer? reminder, carousel;
   AppController get c => widget.controller;
+  late AppearanceService _appearance;
+  String? _backgroundAsset;
+  Uint8List? _backgroundBytes;
+  int _backgroundRequest = 0;
+
+  void _syncBackground() {
+    final asset = c.settings.backgroundAsset;
+    if (_backgroundAsset == asset) return;
+    _backgroundAsset = asset;
+    final request = ++_backgroundRequest;
+    if (_backgroundBytes != null) setState(() => _backgroundBytes = null);
+    if (asset.isEmpty || !_appearance.enabled) return;
+    unawaited(_loadBackground(asset, request));
+  }
+
+  Future<void> _loadBackground(String asset, int request) async {
+    Uint8List? bytes;
+    try {
+      bytes = await _appearance.loadBackground(asset);
+    } catch (_) {
+      bytes = null;
+    }
+    if (!mounted || request != _backgroundRequest) return;
+    setState(() => _backgroundBytes = bytes);
+  }
+
+  @override
+  void didUpdateWidget(covariant WordNestApp oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller != c) {
+      oldWidget.controller.removeListener(_syncBackground);
+      c.addListener(_syncBackground);
+    }
+    if (oldWidget.appearanceService != widget.appearanceService ||
+        oldWidget.native != widget.native ||
+        oldWidget.controller != c) {
+      _appearance =
+          widget.appearanceService ?? AppearanceService(enabled: widget.native);
+      _backgroundAsset = null;
+      _syncBackground();
+    }
+  }
 
   @override
   void initState() {
     super.initState();
+    _appearance =
+        widget.appearanceService ?? AppearanceService(enabled: widget.native);
+    c.addListener(_syncBackground);
+    _syncBackground();
     WidgetsBinding.instance.addObserver(this);
     if (widget.native) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _initializeNative());
@@ -61,7 +115,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       await desktop.configure(c.settings);
       await updates.initialize();
       updates.startAutoChecks(
-        currentVersion: '0.2.0',
+        currentVersion: '0.3.0',
         platform: desktop.isAndroid ? 'android' : 'windows',
       );
       if (!mounted) return;
@@ -230,7 +284,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   Future<void> _checkUpdates() async {
     final result = await updates.check(
-      currentVersion: '0.2.0',
+      currentVersion: '0.3.0',
       platform: desktop.isAndroid ? 'android' : 'windows',
     );
     if (mounted) _message(result.message);
@@ -374,6 +428,8 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    c.removeListener(_syncBackground);
+    _backgroundRequest++;
     WidgetsBinding.instance.removeObserver(this);
     reminder?.cancel();
     carousel?.cancel();
@@ -385,13 +441,20 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
   ThemeData _theme(Brightness brightness) {
     final dark = brightness == Brightness.dark;
     final scheme = ColorScheme.fromSeed(
-      seedColor: const Color(0xff23775d),
+      seedColor: Color(c.settings.accentArgb),
       brightness: brightness,
       surface: dark ? const Color(0xff171e1b) : Colors.white,
     );
     return ThemeData(
       useMaterial3: true,
       colorScheme: scheme,
+      extensions: [
+        AppearanceTheme(
+          materialMode: c.settings.materialMode,
+          surfaceOpacity:
+              surfaceOpacityPreview.value ?? c.settings.surfaceOpacity,
+        ),
+      ],
       scaffoldBackgroundColor: dark
           ? const Color(0xff111813)
           : const Color(0xfff6f7f3),
@@ -451,7 +514,13 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([c, desktop, updates]),
+    listenable: Listenable.merge([
+      c,
+      desktop,
+      updates,
+      backgroundOpacityPreview,
+      surfaceOpacityPreview,
+    ]),
     builder: (context, _) => MaterialApp(
       navigatorKey: navigatorKey,
       scaffoldMessengerKey: messengerKey,
@@ -470,7 +539,49 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       builder: (context, child) => MediaQuery(
         data: MediaQuery.of(context)
             .copyWith(textScaler: TextScaler.linear(c.settings.fontScale)),
-        child: child!,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ColoredBox(
+                  key: const ValueKey('appearance-background'),
+                  color: Theme.of(context).scaffoldBackgroundColor,
+                  child: _backgroundBytes == null
+                      ? const SizedBox.expand()
+                      : Stack(
+                          fit: StackFit.expand,
+                          children: [
+                            Image.memory(
+                              _backgroundBytes!,
+                              key: ValueKey(_backgroundAsset),
+                              fit: BoxFit.cover,
+                              opacity: AlwaysStoppedAnimation(
+                                backgroundOpacityPreview.value ??
+                                    c.settings.backgroundOpacity,
+                              ),
+                              excludeFromSemantics: true,
+                              errorBuilder: (_, _, _) =>
+                                  const SizedBox.expand(),
+                            ),
+                            ColoredBox(
+                              color: Theme.of(context).scaffoldBackgroundColor
+                                  .withValues(
+                                    alpha:
+                                        Theme.of(context).brightness ==
+                                            Brightness.dark
+                                        ? .72
+                                        : .78,
+                                  ),
+                            ),
+                          ],
+                        ),
+                ),
+              ),
+            ),
+            child!,
+          ],
+        ),
       ),
       home: Builder(
         builder: (context) {
@@ -510,9 +621,16 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
               desktop: desktop,
               onPlatformChanged: _configure,
               onTestNotification: _testNotification,
+              onOpenNotebook: () async => setState(() => page = 2),
               onCalendar: _calendar,
               onCheckUpdates: _checkUpdates,
               onConfigureUpdates: _configureUpdates,
+              onPickBackground: _appearance.enabled
+                  ? _appearance.pickBackground
+                  : null,
+              onDeleteBackground: _appearance.enabled
+                  ? _appearance.deleteBackground
+                  : null,
               updateStatus:
                   updates.lastResult?.message ??
                   (updates.sourceDisabled
@@ -522,6 +640,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
           };
           if (!c.ready) {
             return Scaffold(
+              backgroundColor: Colors.transparent,
               body: Center(
                 child: Padding(
                   padding: const EdgeInsets.all(32),
@@ -530,7 +649,12 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
               ),
             );
           }
-          if (compact) return Scaffold(body: SafeArea(child: body));
+          if (compact) {
+            return Scaffold(
+              backgroundColor: Colors.transparent,
+              body: SafeArea(child: body),
+            );
+          }
           return PopScope<Object?>(
             canPop: false,
             onPopInvokedWithResult: (didPop, _) {
@@ -539,37 +663,20 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
             },
             child: LayoutBuilder(
               builder: (context, constraints) {
+                final floating =
+                    c.settings.navigationStyle == 'floating' &&
+                    (desktop.isAndroid || desktop.isWindows);
                 final wide =
-                    constraints.maxWidth >= 850 && constraints.maxHeight >= 700;
+                    !floating &&
+                    constraints.maxWidth >= 850 &&
+                    constraints.maxHeight >= 700;
+                final keyboardVisible =
+                    MediaQuery.viewInsetsOf(context).bottom > 0;
                 return Scaffold(
-                  bottomNavigationBar: wide
+                  backgroundColor: Colors.transparent,
+                  bottomNavigationBar: wide || (floating && keyboardVisible)
                       ? null
-                      : NavigationBar(
-                          selectedIndex: page,
-                          onDestinationSelected: _selectPage,
-                          destinations: const [
-                            NavigationDestination(
-                              icon: Icon(Icons.space_dashboard_outlined),
-                              label: '今日',
-                            ),
-                            NavigationDestination(
-                              icon: Icon(Icons.style_outlined),
-                              label: '学习',
-                            ),
-                            NavigationDestination(
-                              icon: Icon(Icons.auto_stories_outlined),
-                              label: '词书',
-                            ),
-                            NavigationDestination(
-                              icon: Icon(Icons.bar_chart_rounded),
-                              label: '记录',
-                            ),
-                            NavigationDestination(
-                              icon: Icon(Icons.tune_rounded),
-                              label: '设置',
-                            ),
-                          ],
-                        ),
+                      : _bottomNavigation(context, floating: floating),
                   body: SafeArea(
                     child: Row(
                       children: [
@@ -590,6 +697,26 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
                               Expanded(
                                 child: AnimatedSwitcher(
                                   duration: const Duration(milliseconds: 160),
+                                  transitionBuilder: (child, animation) =>
+                                      AnimatedBuilder(
+                                        animation: animation,
+                                        child: FadeTransition(
+                                          opacity: animation,
+                                          child: child,
+                                        ),
+                                        builder: (context, faded) {
+                                          final outgoing =
+                                              animation.status ==
+                                              AnimationStatus.reverse;
+                                          return ExcludeFocus(
+                                            excluding: outgoing,
+                                            child: IgnorePointer(
+                                              ignoring: outgoing,
+                                              child: faded,
+                                            ),
+                                          );
+                                        },
+                                      ),
                                   child: KeyedSubtree(
                                     key: ValueKey('$page-$sessionGeneration'),
                                     child: body,
@@ -649,145 +776,214 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
     setState(() => page = value);
   }
 
-  Widget _sidebar(BuildContext context) => Container(
-    width: 224,
-    decoration: BoxDecoration(
-      color: Theme.of(context).colorScheme.surface,
-      border: Border(
-        right: BorderSide(
-          color: Theme.of(context).dividerColor.withValues(alpha: .10),
+  Widget _bottomNavigation(BuildContext context, {required bool floating}) {
+    final appearance = Theme.of(context).extension<AppearanceTheme>()!;
+    final surfaced =
+        floating || appearance.glass || appearance.surfaceOpacity < 1;
+    final navigation = NavigationBar(
+      key: ValueKey(floating ? 'floating-navigation' : 'adaptive-navigation'),
+      backgroundColor: surfaced ? Colors.transparent : null,
+      elevation: surfaced ? 0 : null,
+      height: floating ? 72 : null,
+      selectedIndex: page,
+      onDestinationSelected: _selectPage,
+      destinations: const [
+        NavigationDestination(
+          icon: Icon(Icons.space_dashboard_outlined),
+          label: '今日',
         ),
-      ),
-    ),
-    padding: const EdgeInsets.fromLTRB(18, 30, 18, 22),
-    child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(9),
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primary,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: const Icon(
-                  Icons.spa_rounded,
-                  color: Colors.white,
-                  size: 24,
-                ),
-              ),
-              const SizedBox(width: 11),
-              const Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '词栖',
-                    style: TextStyle(
-                      fontSize: 23,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 3,
-                    ),
-                  ),
-                  Text(
-                    'WORDNEST',
-                    style: TextStyle(
-                      fontSize: 10,
-                      letterSpacing: 2,
-                      color: Color(0xff7d8b81),
-                    ),
-                  ),
-                ],
-              ),
-            ],
+        NavigationDestination(icon: Icon(Icons.style_outlined), label: '学习'),
+        NavigationDestination(
+          icon: Icon(Icons.auto_stories_outlined),
+          label: '词书',
+        ),
+        NavigationDestination(icon: Icon(Icons.bar_chart_rounded), label: '记录'),
+        NavigationDestination(icon: Icon(Icons.tune_rounded), label: '设置'),
+      ],
+    );
+    if (!surfaced) return navigation;
+    final surface = SurfaceMaterial(
+      color: Theme.of(context).colorScheme.surfaceContainer,
+      borderRadius: floating
+          ? BorderRadius.circular(c.settings.navigationRadius.toDouble())
+          : BorderRadius.zero,
+      border: floating
+          ? BorderSide(
+              color: Theme.of(context).dividerColor.withValues(alpha: .15),
+            )
+          : null,
+      child: navigation,
+    );
+    if (!floating) return surface;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          c.settings.navigationInset.toDouble(),
+          8,
+          c.settings.navigationInset.toDouble(),
+          12,
+        ),
+        child: Align(
+          heightFactor: 1,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560),
+            child: surface,
           ),
         ),
-        const SizedBox(height: 42),
-        for (final (i, label, icon) in [
-          (0, '今日', Icons.space_dashboard_outlined),
-          (1, '专注学习', Icons.style_outlined),
-          (2, '我的词书', Icons.auto_stories_outlined),
-          (3, '学习记录', Icons.bar_chart_rounded),
-          (4, '偏好设置', Icons.tune_rounded),
-        ])
-          Padding(
-            padding: const EdgeInsets.only(bottom: 9),
-            child: Material(
-              color: page == i
-                  ? Theme.of(context).colorScheme.primaryContainer
-                        .withValues(alpha: .5)
-                  : Colors.transparent,
-              borderRadius: BorderRadius.circular(13),
-              child: InkWell(
-                borderRadius: BorderRadius.circular(13),
-                onTap: () => _selectPage(i),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 15,
-                    vertical: 15,
+      ),
+    );
+  }
+
+  Widget _sidebar(BuildContext context) => SizedBox(
+    width: 224,
+    child: SurfaceMaterial(
+      borderRadius: BorderRadius.zero,
+      child: Container(
+        decoration: BoxDecoration(
+          border: Border(
+            right: BorderSide(
+              color: Theme.of(context).dividerColor.withValues(alpha: .10),
+            ),
+          ),
+        ),
+        padding: const EdgeInsets.fromLTRB(18, 30, 18, 22),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(9),
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.primary,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(
+                      Icons.spa_rounded,
+                      color: Colors.white,
+                      size: 24,
+                    ),
                   ),
-                  child: Row(
+                  const SizedBox(width: 11),
+                  const Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(
-                        icon,
-                        size: 21,
-                        color: page == i
-                            ? Theme.of(context).colorScheme.primary
-                            : const Color(0xff7d8b81),
-                      ),
-                      const SizedBox(width: 13),
                       Text(
-                        label,
+                        '词栖',
                         style: TextStyle(
-                          fontWeight: page == i
-                              ? FontWeight.w700
-                              : FontWeight.w400,
+                          fontSize: 23,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 3,
+                        ),
+                      ),
+                      Text(
+                        'WORDNEST',
+                        style: TextStyle(
+                          fontSize: 10,
+                          letterSpacing: 2,
+                          color: Color(0xff7d8b81),
                         ),
                       ),
                     ],
                   ),
-                ),
+                ],
               ),
             ),
-          ),
-        const Spacer(),
-        if (desktop.isDesktop)
-          OutlinedButton.icon(
-            onPressed: _toggleCompact,
-            icon: const Icon(Icons.picture_in_picture_alt_rounded, size: 18),
-            label: const Text('桌面小窗'),
-          ),
-        const SizedBox(height: 20),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.offline_pin_outlined,
-                    size: 15,
-                    color: Color(0xff7d8b81),
+            const SizedBox(height: 42),
+            for (final (i, label, icon) in [
+              (0, '今日', Icons.space_dashboard_outlined),
+              (1, '专注学习', Icons.style_outlined),
+              (2, '我的词书', Icons.auto_stories_outlined),
+              (3, '学习记录', Icons.bar_chart_rounded),
+              (4, '偏好设置', Icons.tune_rounded),
+            ])
+              Padding(
+                padding: const EdgeInsets.only(bottom: 9),
+                child: Material(
+                  color: page == i
+                      ? Theme.of(context).colorScheme.primaryContainer
+                            .withValues(alpha: .5)
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(13),
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(13),
+                    onTap: () => _selectPage(i),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 15,
+                        vertical: 15,
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            icon,
+                            size: 21,
+                            color: page == i
+                                ? Theme.of(context).colorScheme.primary
+                                : const Color(0xff7d8b81),
+                          ),
+                          const SizedBox(width: 13),
+                          Text(
+                            label,
+                            style: TextStyle(
+                              fontWeight: page == i
+                                  ? FontWeight.w700
+                                  : FontWeight.w400,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
-                  SizedBox(width: 7),
+                ),
+              ),
+            const Spacer(),
+            if (desktop.isDesktop)
+              OutlinedButton.icon(
+                onPressed: _toggleCompact,
+                icon: const Icon(
+                  Icons.picture_in_picture_alt_rounded,
+                  size: 18,
+                ),
+                label: const Text('桌面小窗'),
+              ),
+            const SizedBox(height: 20),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.offline_pin_outlined,
+                        size: 15,
+                        color: Color(0xff7d8b81),
+                      ),
+                      SizedBox(width: 7),
+                      Text(
+                        '数据只在本地',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Color(0xff7d8b81),
+                        ),
+                      ),
+                    ],
+                  ),
+                  SizedBox(height: 6),
                   Text(
-                    '数据只在本地',
-                    style: TextStyle(fontSize: 12, color: Color(0xff7d8b81)),
+                    '一点空闲，一点进步。',
+                    style: TextStyle(fontSize: 11, color: Color(0xff7d8b81)),
                   ),
                 ],
               ),
-              SizedBox(height: 6),
-              Text(
-                '一点空闲，一点进步。',
-                style: TextStyle(fontSize: 11, color: Color(0xff7d8b81)),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
-      ],
+      ),
     ),
   );
 }
