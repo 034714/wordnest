@@ -442,11 +442,11 @@ class _LibraryPageState extends State<LibraryPage> {
     ImportPreview preview,
     String filename,
   ) async {
-    final imported = await showDialog<bool>(
+    var dedupe = false;
+    final choice = await showDialog<String>(
       context: context,
-      builder: (dialogContext) {
-        final theme = Theme.of(dialogContext);
-        return AlertDialog(
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setDialogState) => AlertDialog(
           title: const Text('确认导入词书'),
           content: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 580, maxHeight: 560),
@@ -456,16 +456,18 @@ class _LibraryPageState extends State<LibraryPage> {
                 children: [
                   Text(
                     preview.book.title,
-                    style: theme.textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
+                    style: Theme.of(dialogContext).textTheme.titleLarge
+                        ?.copyWith(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 5),
                   Text(
                     filename,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
+                    style: Theme.of(dialogContext).textTheme.bodySmall
+                        ?.copyWith(
+                          color: Theme.of(dialogContext)
+                              .colorScheme
+                              .onSurfaceVariant,
+                        ),
                   ),
                   const SizedBox(height: 20),
                   Wrap(
@@ -484,13 +486,23 @@ class _LibraryPageState extends State<LibraryPage> {
                       ),
                     ],
                   ),
+                  if (preview.duplicates > 0) ...[
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('跳过重复词'),
+                      subtitle: const Text('同一个词只保留第一次出现的位置，适合乱序且有重复的公开词表。'),
+                      value: dedupe,
+                      onChanged: (value) =>
+                          setDialogState(() => dedupe = value),
+                    ),
+                  ],
                   if (preview.warnings.isNotEmpty) ...[
                     const SizedBox(height: 21),
                     Text(
                       '导入提示',
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                      ),
+                      style: Theme.of(dialogContext).textTheme.titleSmall
+                          ?.copyWith(fontWeight: FontWeight.w800),
                     ),
                     const SizedBox(height: 8),
                     ...preview.warnings
@@ -504,15 +516,18 @@ class _LibraryPageState extends State<LibraryPage> {
                                 Icon(
                                   Icons.info_outline_rounded,
                                   size: 17,
-                                  color: theme.colorScheme.tertiary,
+                                  color: Theme.of(dialogContext)
+                                      .colorScheme
+                                      .tertiary,
                                 ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
                                     warning,
-                                    style: theme.textTheme.bodySmall?.copyWith(
-                                      height: 1.4,
-                                    ),
+                                    style: Theme.of(dialogContext)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(height: 1.4),
                                   ),
                                 ),
                               ],
@@ -523,9 +538,8 @@ class _LibraryPageState extends State<LibraryPage> {
                   const SizedBox(height: 21),
                   Text(
                     '前 5 个词条',
-                    style: theme.textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
+                    style: Theme.of(dialogContext).textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 8),
                   ...preview.entries.values
@@ -551,22 +565,60 @@ class _LibraryPageState extends State<LibraryPage> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
+              onPressed: () => Navigator.pop(dialogContext, 'cancel'),
               child: const Text('先不导入'),
             ),
             FilledButton.icon(
-              onPressed: () => Navigator.pop(dialogContext, true),
+              onPressed: () =>
+                  Navigator.pop(dialogContext, dedupe ? 'dedupe' : 'plain'),
               icon: const Icon(Icons.download_rounded),
-              label: const Text('导入这本词书'),
+              label: Text(
+                dedupe ? '去重导入 ${_uniqueCount(preview)} 词' : '导入这本词书',
+              ),
             ),
           ],
-        );
-      },
+        ),
+      ),
     );
-    if (imported != true || !mounted) return;
-    final ok = await c.importBook(preview);
-    if (ok) _message('已导入「${preview.book.title}」，现在可以开始学习了。');
+    if (choice == null || choice == 'cancel' || !mounted) return;
+    final target = choice == 'dedupe' ? _dedupePreview(preview) : preview;
+    final ok = await c.importBook(target);
+    if (ok) {
+      _message(
+        choice == 'dedupe'
+            ? '已去重导入「${target.book.title}」，共 ${target.total} 个词。'
+            : '已导入「${preview.book.title}」，现在可以开始学习了。',
+      );
+    }
   }
+
+  /// Keeps the first occurrence of every word, preserving its unit and order.
+  ImportPreview _dedupePreview(ImportPreview preview) {
+    final seen = <String>{};
+    final members = <BookMember>[];
+    for (final member in preview.book.members) {
+      if (seen.add(member.entryId)) members.add(member);
+    }
+    final book = WordBook(
+      id: preview.book.id,
+      title: preview.book.title,
+      source: preview.book.source,
+      importedAt: preview.book.importedAt,
+      members: members,
+    );
+    return ImportPreview(
+      book: book,
+      entries: preview.entries,
+      total: members.length,
+      duplicates: 0,
+      missingMeanings: preview.missingMeanings,
+      missingExamples: preview.missingExamples,
+      warnings: const [],
+    );
+  }
+
+  int _uniqueCount(ImportPreview preview) =>
+      preview.book.members.map((m) => m.entryId).toSet().length;
 
   Future<void> _deleteBook(WordBook book) async {
     final confirmed = await showDialog<bool>(
