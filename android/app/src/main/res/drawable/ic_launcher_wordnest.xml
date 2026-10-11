@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original WordNest launcher artwork; no external image assets. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#224C40" android:pathData="M0,0 H108 V108 H0 Z" />
+    <path android:fillColor="#F6EAC9" android:pathData="M25,33 L49,40 L49,82 L25,75 Z M55,40 L79,33 L79,75 L55,82 Z" />
+    <path android:fillColor="#A9CF8A" android:pathData="M53,33 C53,17 70,17 84,21 C81,37 65,43 53,33 Z" />
+</vector>
