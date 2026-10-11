@@ -238,11 +238,17 @@ class _LibraryPageState extends State<LibraryPage> {
 
   // Local built-in sources for the 内置词库 dialog. A future online catalog
   // can append entries to this list without changing the dialog flow.
-  Future<List<({String asset, String label, String detail})>>
+  Future<List<({String asset, String label, String detail, IconData icon})>>
   _builtInBooks() async {
-    final items = <({String asset, String label, String detail})>[
-      (asset: 'demo.json', label: '自编演示 24 词', detail: '了解完整学习流程'),
-    ];
+    final items =
+        <({String asset, String label, String detail, IconData icon})>[
+          (
+            asset: 'demo.json',
+            label: '自编演示 24 词',
+            detail: '了解完整学习流程',
+            icon: Icons.auto_awesome_outlined,
+          ),
+        ];
     // The personal build ships this file; the public source export does not.
     try {
       await rootBundle.load('assets/demo.json');
@@ -250,6 +256,7 @@ class _LibraryPageState extends State<LibraryPage> {
         asset: 'demo.json',
         label: '内置演示词书',
         detail: '自编 24 词内容',
+        icon: Icons.menu_book_rounded,
       ));
     } catch (_) {}
     return items;
@@ -277,10 +284,24 @@ class _LibraryPageState extends State<LibraryPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  Text(
+                    '随包词书（离线可用）',
+                    style: Theme.of(context).textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
                   for (final item in items)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.folder_open_rounded),
+                      leading: CircleAvatar(
+                        backgroundColor: Theme.of(context)
+                            .colorScheme
+                            .primaryContainer,
+                        child: Icon(
+                          item.icon,
+                          size: 20,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                      ),
                       title: Text(item.label),
                       subtitle: Text(item.detail),
                       onTap: downloading == null
@@ -290,13 +311,13 @@ class _LibraryPageState extends State<LibraryPage> {
                   if (online.isNotEmpty) ...[
                     const Divider(height: 22),
                     Text(
-                      '在线词库',
+                      '在线词库（需要网络，下载后预览再导入）',
                       style: Theme.of(context).textTheme.titleSmall
                           ?.copyWith(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '公开词表按需下载，导入前仍会先预览确认。',
+                      '只收录已核对许可证的公开来源，每本都显示来源署名。',
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
                       ),
@@ -304,7 +325,18 @@ class _LibraryPageState extends State<LibraryPage> {
                     for (final book in online)
                       ListTile(
                         contentPadding: EdgeInsets.zero,
-                        leading: const Icon(Icons.cloud_download_outlined),
+                        leading: CircleAvatar(
+                          backgroundColor: Theme.of(context)
+                              .colorScheme
+                              .secondaryContainer,
+                          child: Icon(
+                            book.id.startsWith('kylebing')
+                                ? Icons.auto_stories_rounded
+                                : Icons.abc_rounded,
+                            size: 20,
+                            color: Theme.of(context).colorScheme.secondary,
+                          ),
+                        ),
                         title: Text(book.title),
                         subtitle: Padding(
                           padding: const EdgeInsets.only(top: 3),
@@ -742,11 +774,6 @@ class _LibraryPageState extends State<LibraryPage> {
                 runSpacing: 10,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  OutlinedButton.icon(
-                    onPressed: _busy ? null : _pickAndPreview,
-                    icon: const Icon(Icons.add_rounded),
-                    label: const Text('导入本地词书'),
-                  ),
                   OutlinedButton.icon(
                     onPressed: _busy ? null : _showBuiltInBooks,
                     icon: const Icon(Icons.cloud_download_outlined),
