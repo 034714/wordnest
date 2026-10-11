@@ -340,6 +340,7 @@ void main() {
         resolver: (_) async => [
           InternetAddress(++resolutions == 1 ? '8.8.8.8' : '127.0.0.1'),
         ],
+        proxyProbe: (_) async => null,
         transport: (uri, address) async {
           requests++;
           expect(uri.host, 'updates.example.com');
@@ -415,6 +416,7 @@ void main() {
         InternetAddress('8.8.8.8'),
         InternetAddress('10.0.0.1'),
       ],
+      proxyProbe: (_) async => null,
       transport: (_, _) async => throw StateError('must not reach transport'),
     );
     await mixed.initialize();
@@ -436,6 +438,7 @@ void main() {
           await Future<void>.delayed(const Duration(milliseconds: 50));
           return [InternetAddress('8.8.8.8')];
         },
+        proxyProbe: (_) async => null,
         transport: (_, _) async => throw StateError('must not reach transport'),
       );
       await slow.initialize();
@@ -498,4 +501,183 @@ void main() {
       second.dispose();
     },
   );
+
+  test('proxy detection parses PAC directives and registry values', () {
+    expect(
+      firstProxyDirective('PROXY 127.0.0.1:7890; DIRECT'),
+      '127.0.0.1:7890',
+    );
+    expect(firstProxyDirective('DIRECT'), isNull);
+    expect(firstProxyDirective(''), isNull);
+    expect(firstProxyDirective('SOCKS5 127.0.0.1:7890'), isNull);
+    final pac = HttpClient.findProxyFromEnvironment(
+      Uri.parse('https://example.com/feed.json'),
+      environment: {'https_proxy': 'http://127.0.0.1:7890'},
+    );
+    expect(firstProxyDirective(pac), '127.0.0.1:7890');
+    expect(proxyServerFromRegistry('127.0.0.1:7890'), '127.0.0.1:7890');
+    expect(
+      proxyServerFromRegistry('http=127.0.0.1:7891;https=127.0.0.1:7890'),
+      '127.0.0.1:7890',
+    );
+    expect(proxyServerFromRegistry('  '), isNull);
+    expect(isFakeIpAddress(InternetAddress('198.18.0.58')), isTrue);
+    expect(isFakeIpAddress(InternetAddress('198.19.255.1')), isTrue);
+    expect(isFakeIpAddress(InternetAddress('8.8.8.8')), isFalse);
+    expect(isFakeIpAddress(InternetAddress('127.0.0.1')), isFalse);
+    expect(isFakeIpAddress(InternetAddress('fc00::1')), isTrue);
+  });
+
+  test('fake-ip DNS with system proxy succeeds through proxy path', () async {
+    SharedPreferences.setMockInitialValues({});
+    var pinned = 0;
+    var probes = 0;
+    String? usedProxy;
+    Uri? proxiedTarget;
+    final service = UpdateService(
+      resolver: (_) async => [InternetAddress('198.18.0.58')],
+      transport: (_, _) async {
+        pinned++;
+        throw StateError('pinned path must not be used');
+      },
+      proxyProbe: (uri) async {
+        probes++;
+        expect(uri.host, 'raw.githubusercontent.com');
+        return '127.0.0.1:7890';
+      },
+      proxiedFetch: (uri, proxy) async {
+        proxiedTarget = uri;
+        usedProxy = proxy;
+        return FetchResponse(
+          200,
+          utf8.encode(metadata(version: '0.2.0', platform: 'android')),
+        );
+      },
+    );
+    await service.initialize();
+    final result = await service.check(
+      currentVersion: '0.1.0',
+      platform: 'android',
+    );
+    expect(result.state, UpdateState.available);
+    expect(result.metadata?.version, '0.2.0');
+    expect(pinned, 0);
+    expect(probes, 1);
+    expect(usedProxy, '127.0.0.1:7890');
+    expect(
+      proxiedTarget.toString(),
+      UpdateService.defaultSourceUrlFor('android'),
+    );
+    service.dispose();
+  });
+
+  test('fake-ip DNS without proxy reports fake-ip guidance', () async {
+    SharedPreferences.setMockInitialValues({});
+    var calls = 0;
+    final service = UpdateService(
+      resolver: (_) async => [InternetAddress('198.18.0.58')],
+      transport: (_, _) async {
+        calls++;
+        return const FetchResponse(200, []);
+      },
+      proxyProbe: (_) async => null,
+      proxiedFetch: (_, _) async {
+        calls++;
+        return const FetchResponse(200, []);
+      },
+    );
+    await service.initialize();
+    final result = await service.check(
+      currentVersion: '0.1.0',
+      platform: 'android',
+    );
+    expect(result.state, UpdateState.error);
+    expect(result.message, contains('fake-ip'));
+    expect(result.message, contains('系统代理'));
+    expect(calls, 0);
+    service.dispose();
+  });
+
+  test('public DNS keeps pinned path and never probes proxy', () async {
+    SharedPreferences.setMockInitialValues({});
+    var pinned = 0;
+    var probes = 0;
+    var proxied = 0;
+    final service = UpdateService(
+      resolver: (_) async => [InternetAddress('8.8.8.8')],
+      transport: (uri, address) async {
+        pinned++;
+        expect(address.address, '8.8.8.8');
+        return FetchResponse(
+          200,
+          utf8.encode(metadata(version: '0.2.0', platform: 'android')),
+        );
+      },
+      proxyProbe: (_) async {
+        probes++;
+        return '127.0.0.1:7890';
+      },
+      proxiedFetch: (_, _) async {
+        proxied++;
+        return const FetchResponse(200, []);
+      },
+    );
+    await service.initialize();
+    expect(
+      (await service.check(currentVersion: '0.1.0', platform: 'android')).state,
+      UpdateState.available,
+    );
+    expect(pinned, 1);
+    expect(probes, 0);
+    expect(proxied, 0);
+    service.dispose();
+  });
+
+  test('redirect to private host rejected in pinned and proxy paths', () async {
+    SharedPreferences.setMockInitialValues({});
+    var proxied = 0;
+    final pinnedService = UpdateService(
+      resolver: (_) async => [InternetAddress('8.8.8.8')],
+      transport: (_, _) async =>
+          const FetchResponse(302, [], location: 'https://127.0.0.1/x.json'),
+      proxyProbe: (_) async => '127.0.0.1:7890',
+      proxiedFetch: (_, _) async {
+        proxied++;
+        return const FetchResponse(200, []);
+      },
+    );
+    await pinnedService.initialize();
+    expect(
+      (await pinnedService.check(
+        currentVersion: '0.1.0',
+        platform: 'android',
+      )).state,
+      UpdateState.invalid,
+    );
+    expect(proxied, 0);
+    pinnedService.dispose();
+
+    SharedPreferences.setMockInitialValues({});
+    var pinnedCalls = 0;
+    final proxiedService = UpdateService(
+      resolver: (_) async => [InternetAddress('198.18.0.58')],
+      transport: (_, _) async {
+        pinnedCalls++;
+        throw StateError('pinned path must not be used');
+      },
+      proxyProbe: (_) async => '127.0.0.1:7890',
+      proxiedFetch: (_, _) async =>
+          const FetchResponse(302, [], location: 'https://10.0.0.1/x.json'),
+    );
+    await proxiedService.initialize();
+    expect(
+      (await proxiedService.check(
+        currentVersion: '0.1.0',
+        platform: 'android',
+      )).state,
+      UpdateState.invalid,
+    );
+    expect(pinnedCalls, 0);
+    proxiedService.dispose();
+  });
 }

@@ -73,11 +73,17 @@ class CatalogService {
   CatalogService({
     AddressResolver? resolver,
     PinnedFetch? transport,
+    ProxyProbe? proxyProbe,
+    ProxiedFetch? proxiedFetch,
     this.timeout = const Duration(seconds: 20),
   }) : _resolver = resolver ?? InternetAddress.lookup,
-       // Public named parameter cannot be a private initializing formal.
+       // Public named parameters cannot be private initializing formals.
        // ignore: prefer_initializing_formals
-       _transport = transport;
+       _transport = transport,
+       // ignore: prefer_initializing_formals
+       _proxyProbe = proxyProbe,
+       // ignore: prefer_initializing_formals
+       _proxiedFetch = proxiedFetch;
 
   /// Hard cap for every catalog download, independent of the update feed
   /// limit (64 KiB).
@@ -210,6 +216,8 @@ class CatalogService {
 
   final AddressResolver _resolver;
   final PinnedFetch? _transport;
+  final ProxyProbe? _proxyProbe;
+  final ProxiedFetch? _proxiedFetch;
   final Duration timeout;
 
   /// Allowlisted entries only. No network request is made by this call.
@@ -234,6 +242,8 @@ class CatalogService {
         timeout: timeout,
         maxBodyBytes: limit,
         transport: _transport,
+        proxyProbe: _proxyProbe,
+        proxiedFetch: _proxiedFetch,
       );
       if (response.statusCode != HttpStatus.ok) {
         throw CatalogError('下载失败：服务器响应 ${response.statusCode}。');
@@ -253,6 +263,8 @@ class CatalogService {
       );
     } on CatalogError {
       rethrow;
+    } on FakeIpDnsException catch (error) {
+      throw CatalogError(error.toString());
     } on FormatException catch (error) {
       throw CatalogError('下载的词表无效：$error');
     } catch (error) {

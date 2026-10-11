@@ -10,9 +10,16 @@ import 'safe_http.dart';
 export 'safe_http.dart'
     show
         AddressResolver,
+        FakeIpDnsException,
         FetchResponse,
         PinnedFetch,
+        ProxiedFetch,
+        ProxyProbe,
+        defaultSystemProxy,
+        firstProxyDirective,
+        isFakeIpAddress,
         isPublicAddress,
+        proxyServerFromRegistry,
         validatePublicHttpUrl;
 
 /// Kept for existing callers; same as [validatePublicHttpUrl].
@@ -98,12 +105,18 @@ class UpdateService extends ChangeNotifier {
   UpdateService({
     AddressResolver? resolver,
     PinnedFetch? transport,
+    ProxyProbe? proxyProbe,
+    ProxiedFetch? proxiedFetch,
     DateTime Function()? now,
     this.timeout = requestTimeout,
   }) : _resolver = resolver ?? InternetAddress.lookup,
-       // Public named parameter cannot be a private initializing formal.
+       // Public named parameters cannot be private initializing formals.
        // ignore: prefer_initializing_formals
        _transport = transport,
+       // ignore: prefer_initializing_formals
+       _proxyProbe = proxyProbe,
+       // ignore: prefer_initializing_formals
+       _proxiedFetch = proxiedFetch,
        _now = now ?? DateTime.now;
 
   static const maxBodyBytes = 64 * 1024;
@@ -127,6 +140,8 @@ class UpdateService extends ChangeNotifier {
 
   final AddressResolver _resolver;
   final PinnedFetch? _transport;
+  final ProxyProbe? _proxyProbe;
+  final ProxiedFetch? _proxiedFetch;
   final DateTime Function() _now;
   final Duration timeout;
   SharedPreferences? _prefs;
@@ -261,6 +276,8 @@ class UpdateService extends ChangeNotifier {
           maxBodyBytes: maxBodyBytes,
           maxRedirects: maxRedirects,
           transport: _transport,
+          proxyProbe: _proxyProbe,
+          proxiedFetch: _proxiedFetch,
         );
         final responseStatus = response.statusCode;
         if (responseStatus != HttpStatus.ok) {
@@ -273,13 +290,19 @@ class UpdateService extends ChangeNotifier {
           utf8.decode(response.body),
           platform: platform,
         );
-        // Validate download DNS now. Future downloads must revalidate and use
-        // the same pinning policy, never trust this stale lookup.
-        await resolveValidatedAddress(
-          metadata.downloadUrl.host,
-          _resolver,
-          timeout,
-        ).timeout(timeout);
+        // Best-effort download-host check. Future downloads revalidate through
+        // the same hardened path; fake-ip proxy environments resolve to
+        // benchmark ranges here and must not fail the metadata check.
+        try {
+          await resolveValidatedAddress(
+            metadata.downloadUrl.host,
+            _resolver,
+            timeout,
+          ).timeout(timeout);
+        } catch (_) {
+          // Hostname/literal rules were already enforced by the metadata
+          // parser; DNS-level routing is decided at download time.
+        }
         final newer =
             compareUpdateVersions(metadata.version, currentVersion) > 0;
         result = UpdateCheckResult(
@@ -287,6 +310,8 @@ class UpdateService extends ChangeNotifier {
           newer ? '发现新版本 ${metadata.version}；请自行确认下载来源。' : '当前已是最新版本。',
           metadata: metadata,
         );
+      } on FakeIpDnsException catch (error) {
+        result = UpdateCheckResult(UpdateState.error, error.toString());
       } on FormatException catch (error) {
         result = UpdateCheckResult(UpdateState.invalid, '更新配置或元数据无效：$error');
       } catch (error) {

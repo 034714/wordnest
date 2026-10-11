@@ -3,10 +3,11 @@ import 'dart:io';
 
 /// Shared hardened HTTP primitives for update and catalog downloads.
 ///
-/// Rules: http/https only with public DNS answers only; each hop is resolved
-/// again and connected to by numeric address (no second resolution, no DNS
-/// rebinding); HTTPS keeps the original URI host for certificate/SNI; proxies
-/// are disabled; redirects are followed manually with revalidation; strict
+/// Rules: http/https only with public DNS answers connected by numeric address
+/// (no second resolution, no DNS rebinding); HTTPS keeps the original URI host
+/// for certificate/SNI; no proxy unless local DNS is unusable (fake-ip) and a
+/// system proxy is advertised, in which case the proxy performs its own DNS;
+/// redirects are followed manually with per-hop hostname revalidation; strict
 /// body and time bounds. Nothing here downloads or executes installers.
 typedef AddressResolver = Future<List<InternetAddress>> Function(String host);
 
@@ -14,6 +15,12 @@ typedef PinnedFetch = Future<FetchResponse> Function(
   Uri uri,
   InternetAddress address,
 );
+
+/// Returns a `host:port` proxy endpoint, or null when no proxy is available.
+typedef ProxyProbe = Future<String?> Function(Uri uri);
+
+/// Performs a request through the given proxy endpoint without pinning.
+typedef ProxiedFetch = Future<FetchResponse> Function(Uri uri, String proxy);
 
 const Set<int> redirectStatusCodes = {301, 302, 303, 307, 308};
 
@@ -23,6 +30,15 @@ class FetchResponse {
   final List<int> body;
   final String? location;
   bool get isRedirect => redirectStatusCodes.contains(statusCode);
+}
+
+/// Local DNS answered with proxy fake-ip virtual addresses while no system
+/// proxy could be detected, so no safe route exists.
+class FakeIpDnsException implements Exception {
+  const FakeIpDnsException();
+  static const message = '检测到本机代理的虚拟 IP 解析；请在代理中关闭 fake-ip 或改用系统代理模式';
+  @override
+  String toString() => message;
 }
 
 /// Rejects non-public destinations before any network access. This is only a
@@ -106,22 +122,189 @@ bool isPublicAddress(InternetAddress address) {
       !(b[0] == 0x3f && b[1] == 0xff && (b[2] & 0xf0) == 0);
 }
 
-/// Resolves every address and requires all of them to be public.
+/// True for the virtual ranges proxy fake-ip DNS uses (benchmark 198.18.0.0/15
+/// and, for IPv6 fake-ip pools, ULA fc00::/7). Plain private/loopback answers
+/// are NOT fake-ip: they fail closed instead of falling back to a proxy.
+bool isFakeIpAddress(InternetAddress address) {
+  final b = address.rawAddress;
+  if (b.length == 4) {
+    return b[0] == 198 && (b[1] == 18 || b[1] == 19);
+  }
+  return b.length == 16 && (b[0] & 0xfe) == 0xfc;
+}
+
+/// First usable PROXY directive of a PAC string; null when the result is
+/// DIRECT only or uses unsupported directive types.
+String? firstProxyDirective(String pac) {
+  for (final raw in pac.split(';')) {
+    final directive = raw.trim();
+    if (directive.isEmpty) {
+      continue;
+    }
+    final upper = directive.toUpperCase();
+    if (upper.startsWith('PROXY ')) {
+      final endpoint = directive.substring(6).trim();
+      if (endpoint.isNotEmpty) {
+        return endpoint;
+      }
+    }
+  }
+  return null;
+}
+
+/// Parses the Windows `ProxyServer` value: bare `host:port` or a
+/// `scheme=host:port;...` list (prefers https, then http).
+String? proxyServerFromRegistry(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) {
+    return null;
+  }
+  if (!trimmed.contains('=')) {
+    return trimmed;
+  }
+  final entries = <String, String>{};
+  for (final part in trimmed.split(';')) {
+    final index = part.indexOf('=');
+    if (index <= 0) {
+      continue;
+    }
+    final endpoint = part.substring(index + 1).trim();
+    if (endpoint.isNotEmpty) {
+      entries[part.substring(0, index).trim().toLowerCase()] = endpoint;
+    }
+  }
+  if (entries.isEmpty) {
+    return null;
+  }
+  return entries['https'] ?? entries['http'] ?? entries.values.first;
+}
+
+/// System proxy lookup: environment variables first (the same rules as
+/// [HttpClient.findProxyFromEnvironment]); when no proxy environment exists at
+/// all on Windows, falls back to the per-user Internet Settings registry value
+/// that the OS "system proxy" toggle writes. `DIRECT` means no proxy.
+Future<String?> defaultSystemProxy(Uri uri) async {
+  final fromEnvironment = firstProxyDirective(
+    HttpClient.findProxyFromEnvironment(uri),
+  );
+  if (fromEnvironment != null) {
+    return fromEnvironment;
+  }
+  const proxyKeys = [
+    'http_proxy',
+    'https_proxy',
+    'all_proxy',
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'ALL_PROXY',
+    'no_proxy',
+    'NO_PROXY',
+  ];
+  final hasProxyEnvironment = proxyKeys.any(
+    (key) => (Platform.environment[key] ?? '').isNotEmpty,
+  );
+  if (hasProxyEnvironment || !Platform.isWindows) {
+    return null;
+  }
+  return _windowsRegistryProxy();
+}
+
+Future<String?> _windowsRegistryProxy() async {
+  try {
+    final systemRoot = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+    final reg = '$systemRoot\\System32\\reg.exe';
+    const path =
+        r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
+    final enabled = await Process.run(reg, [
+      'query',
+      path,
+      '/v',
+      'ProxyEnable',
+    ], runInShell: false);
+    if (enabled.exitCode != 0 ||
+        !RegExp(r'0x1\b').hasMatch(enabled.stdout.toString())) {
+      return null;
+    }
+    final server = await Process.run(reg, [
+      'query',
+      path,
+      '/v',
+      'ProxyServer',
+    ], runInShell: false);
+    if (server.exitCode != 0) {
+      return null;
+    }
+    final match = RegExp(r'ProxyServer\s+REG_SZ\s+(.+)')
+        .firstMatch(server.stdout.toString());
+    if (match == null) {
+      return null;
+    }
+    return proxyServerFromRegistry(match.group(1)!);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Resolves every address and requires all of them to be public. Used for
+/// best-effort checks; transport routing lives in [safeHttpGet].
 Future<InternetAddress> resolveValidatedAddress(
+  String host,
+  AddressResolver resolver,
+  Duration timeout,
+) async {
+  final addresses = await lookupHost(host, resolver, timeout);
+  if (addresses.isEmpty ||
+      addresses.any((address) => !isPublicAddress(address))) {
+    throw const FormatException('域名解析到私有、保留地址或没有有效地址');
+  }
+  return addresses.first;
+}
+
+/// Raw lookup for a hostname or literal IP (literal bypasses the resolver).
+Future<List<InternetAddress>> lookupHost(
   String host,
   AddressResolver resolver,
   Duration timeout,
 ) async {
   final normalized = host.toLowerCase().replaceFirst(RegExp(r'\.$'), '');
   final literal = InternetAddress.tryParse(normalized);
-  final addresses = literal != null
-      ? [literal]
-      : await resolver(normalized).timeout(timeout);
-  if (addresses.isEmpty ||
-      addresses.any((address) => !isPublicAddress(address))) {
-    throw const FormatException('域名解析到私有、保留地址或没有有效地址');
+  if (literal != null) {
+    return [literal];
   }
-  return addresses.first;
+  return await resolver(normalized).timeout(timeout);
+}
+
+Future<FetchResponse> _exchange(
+  HttpClient client,
+  Uri uri,
+  int maxBodyBytes,
+) async {
+  final request = await client.getUrl(uri);
+  request.followRedirects = false;
+  request.headers.set(
+    HttpHeaders.acceptHeader,
+    'application/json, text/plain, */*',
+  );
+  request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
+  final response = await request.close();
+  final location = response.headers.value(HttpHeaders.locationHeader);
+  if (response.statusCode != HttpStatus.ok) {
+    return FetchResponse(response.statusCode, const [], location: location);
+  }
+  if (response.contentLength > maxBodyBytes ||
+      (response.headers.value(HttpHeaders.contentEncodingHeader) ??
+              'identity') !=
+          'identity') {
+    throw const FormatException('响应过大或使用不支持的压缩编码');
+  }
+  final bytes = <int>[];
+  await for (final chunk in response) {
+    if (bytes.length + chunk.length > maxBodyBytes) {
+      throw const FormatException('响应内容超过大小限制');
+    }
+    bytes.addAll(chunk);
+  }
+  return FetchResponse(response.statusCode, bytes);
 }
 
 /// One pinned socket per hop. The URI host is never replaced by the IP, so
@@ -178,34 +361,7 @@ Future<FetchResponse> fetchPinned(
     });
   };
   try {
-    return await (() async {
-      final request = await client.getUrl(uri);
-      request.followRedirects = false;
-      request.headers.set(
-        HttpHeaders.acceptHeader,
-        'application/json, text/plain, */*',
-      );
-      request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
-      final response = await request.close();
-      final location = response.headers.value(HttpHeaders.locationHeader);
-      if (response.statusCode != HttpStatus.ok) {
-        return FetchResponse(response.statusCode, const [], location: location);
-      }
-      if (response.contentLength > maxBodyBytes ||
-          (response.headers.value(HttpHeaders.contentEncodingHeader) ??
-                  'identity') !=
-              'identity') {
-        throw const FormatException('响应过大或使用不支持的压缩编码');
-      }
-      final bytes = <int>[];
-      await for (final chunk in response) {
-        if (bytes.length + chunk.length > maxBodyBytes) {
-          throw const FormatException('响应内容超过大小限制');
-        }
-        bytes.addAll(chunk);
-      }
-      return FetchResponse(response.statusCode, bytes);
-    })().timeout(timeout);
+    return await _exchange(client, uri, maxBodyBytes).timeout(timeout);
   } finally {
     watchdog.cancel();
     active = false;
@@ -215,39 +371,108 @@ Future<FetchResponse> fetchPinned(
   }
 }
 
-/// Manual redirect loop with per-hop address validation and a single overall
-/// deadline. HTTPS may not be downgraded. Body is bounded by [maxBodyBytes].
+/// Proxy fallback used only when local DNS answers are unusable (typical for
+/// proxy fake-ip setups). The proxy performs its own name resolution, so no
+/// pinning is possible or needed; hostname, redirect and size rules still
+/// apply and TLS identity is verified against the original hostname.
+Future<FetchResponse> fetchViaProxy(
+  Uri uri, {
+  required String proxy,
+  required Duration timeout,
+  required int maxBodyBytes,
+}) async {
+  final client = HttpClient()
+    ..connectionTimeout = timeout
+    ..autoUncompress = false
+    ..findProxy = ((_) => 'PROXY $proxy');
+  final watchdog = Timer(timeout, () => client.close(force: true));
+  try {
+    return await _exchange(client, uri, maxBodyBytes).timeout(timeout);
+  } finally {
+    watchdog.cancel();
+    client.close(force: true);
+  }
+}
+
+/// Manual redirect loop with per-hop hostname validation, public-DNS pinning
+/// preferred, and a bounded body plus single overall deadline. HTTPS may not
+/// be downgraded. When local DNS yields no public answer (benchmark/private
+/// answers or resolution failure) a detected system proxy is used instead;
+/// without one, fake-ip environments get an explicit Chinese error.
 Future<FetchResponse> safeHttpGet({
   required Uri uri,
   required AddressResolver resolver,
   required Duration timeout,
   required int maxBodyBytes,
   PinnedFetch? transport,
+  ProxyProbe? proxyProbe,
+  ProxiedFetch? proxiedFetch,
   int maxRedirects = 3,
 }) async {
   final deadline = DateTime.now().add(timeout);
   Duration remaining() {
     final left = deadline.difference(DateTime.now());
-    if (left <= Duration.zero) throw TimeoutException('下载超时');
+    if (left <= Duration.zero) {
+      throw TimeoutException('下载超时');
+    }
     return left;
   }
 
   var current = validatePublicHttpUrl(uri.toString());
   for (var hop = 0; hop <= maxRedirects; hop++) {
-    final address = await resolveValidatedAddress(
-      current.host,
-      resolver,
-      remaining(),
-    );
-    final fetched = transport != null
-        ? await transport(current, address).timeout(remaining())
-        : await fetchPinned(
-            current,
-            address,
-            timeout: remaining(),
-            maxBodyBytes: maxBodyBytes,
-          );
-    if (!fetched.isRedirect) return fetched;
+    List<InternetAddress> answers = const [];
+    Object? resolveError;
+    StackTrace? resolveStack;
+    try {
+      answers = await lookupHost(current.host, resolver, remaining());
+    } catch (error, stack) {
+      resolveError = error;
+      resolveStack = stack;
+    }
+    final allPublic = answers.isNotEmpty && answers.every(isPublicAddress);
+    final anyPublic = answers.any(isPublicAddress);
+    if (answers.isNotEmpty && anyPublic && !allPublic) {
+      throw const FormatException('DNS 解析包含非公共地址，已拒绝连接');
+    }
+
+    FetchResponse fetched;
+    if (allPublic) {
+      fetched = transport != null
+          ? await transport(current, answers.first).timeout(remaining())
+          : await fetchPinned(
+              current,
+              answers.first,
+              timeout: remaining(),
+              maxBodyBytes: maxBodyBytes,
+            );
+    } else {
+      final proxy = await (proxyProbe ?? defaultSystemProxy)(current)
+          .timeout(remaining());
+      if (proxy == null) {
+        if (answers.isNotEmpty) {
+          if (answers.every(isFakeIpAddress)) {
+            throw const FakeIpDnsException();
+          }
+          throw const FormatException('域名解析到私有、保留地址或没有有效地址');
+        }
+        if (resolveError != null) {
+          Error.throwWithStackTrace(resolveError, resolveStack!);
+        }
+        throw const FormatException('域名没有可用地址');
+      }
+      fetched = proxiedFetch != null
+          ? await proxiedFetch(current, proxy).timeout(remaining())
+          : await fetchViaProxy(
+              current,
+              proxy: proxy,
+              timeout: remaining(),
+              maxBodyBytes: maxBodyBytes,
+            );
+    }
+
+    if (!fetched.isRedirect) {
+      return fetched;
+    }
     if (hop == maxRedirects) {
       throw const FormatException('重定向过多');
     }

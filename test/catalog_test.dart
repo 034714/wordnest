@@ -159,6 +159,7 @@ void main() {
       var calls = 0;
       final privateDns = CatalogService(
         resolver: (_) async => [InternetAddress('127.0.0.1')],
+        proxyProbe: (_) async => null,
         transport: (_, _) async {
           calls++;
           return FetchResponse(200, utf8.encode('x'));
@@ -191,4 +192,52 @@ void main() {
       await expectLater(downgrade.fetch(book), throwsA(isA<CatalogError>()));
     },
   );
+
+  test('fake-ip DNS with system proxy downloads through proxy', () async {
+    var pinned = 0;
+    String? usedProxy;
+    final service = CatalogService(
+      resolver: (_) async => [InternetAddress('198.18.0.58')],
+      transport: (_, _) async {
+        pinned++;
+        throw StateError('pinned path must not be used');
+      },
+      proxyProbe: (_) async => '127.0.0.1:7890',
+      proxiedFetch: (uri, proxy) async {
+        expect(uri.host, 'raw.githubusercontent.com');
+        usedProxy = proxy;
+        return FetchResponse(200, utf8.encode('abandon\tv.放弃\n'));
+      },
+    );
+    final book = (await service.list()).firstWhere(
+      (b) => b.id == 'kylebing-cet4',
+    );
+    final download = await service.fetch(book);
+    expect(download.filename, '3 四级-乱序.txt');
+    expect(download.text, 'abandon\tv.放弃\n');
+    expect(usedProxy, '127.0.0.1:7890');
+    expect(pinned, 0);
+  });
+
+  test('fake-ip DNS without proxy reports fake-ip guidance', () async {
+    final service = CatalogService(
+      resolver: (_) async => [InternetAddress('198.18.0.58')],
+      proxyProbe: (_) async => null,
+    );
+    final book = (await service.list()).firstWhere(
+      (b) => b.id == 'kylebing-cet4',
+    );
+    await expectLater(
+      service.fetch(book),
+      throwsA(
+        isA<CatalogError>()
+            .having((e) => e.message, 'message', contains('fake-ip'))
+            .having(
+              (e) => e.message,
+              'message',
+              contains('关闭 fake-ip 或改用系统代理模式'),
+            ),
+      ),
+    );
+  });
 }
