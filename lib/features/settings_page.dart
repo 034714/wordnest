@@ -533,7 +533,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         '在线仅发送当前单个英语词，不发送释义或个人笔记。成功下载的 MP3 存在应用本地，清除应用数据会移除缓存。',
                       ),
                       const Text(
-                        '备用指导：Android 系统文字转语音设置中选择引擎并安装英语语音数据；Windows 设置 → 时间和语言 → 语音 → 管理声音 → 添加英语语音。安装后返回重试。系统引擎是否联网由其自身设置决定。',
+                        '备用指导：系统文字转语音仅作兜底，不安装也能正常用词音频（由有道提供）。Android：系统文字转语音设置中选择引擎并安装英语语音数据；Windows：设置 → 时间和语言 → 语音 → 管理声音 → 添加英语语音。安装后返回重试。系统引擎是否联网由其自身设置决定。',
                       ),
                     ],
                   ),
@@ -1024,6 +1024,31 @@ class _SettingsPageState extends State<SettingsPage> {
                 icon: const Icon(Icons.menu_book_outlined),
                 label: const Text('查看开源许可'),
               ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                runSpacing: 8,
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: widget.native
+                        ? () => widget.desktop.openUrl(
+                              'https://github.com/034714/wordnest',
+                            )
+                        : null,
+                    icon: const Icon(Icons.code_outlined, size: 18),
+                    label: const Text('GitHub 项目主页'),
+                  ),
+                  OutlinedButton.icon(
+                    onPressed: widget.native
+                        ? () => widget.desktop.openUrl(
+                              'https://blog.guoyue2010.cn/',
+                            )
+                        : null,
+                    icon: const Icon(Icons.article_outlined, size: 18),
+                    label: const Text('作者博客'),
+                  ),
+                ],
+              ),
               const Divider(height: 30),
               _SettingRow(
                 title: '应用更新',
@@ -1043,7 +1068,11 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               if (widget.native && widget.updates != null)
-                UpdateDownloadPanel(updates: widget.updates!),
+                UpdateDownloadPanel(
+                  updates: widget.updates!,
+                  onOpenInBrowser: (url) =>
+                      widget.desktop.openUrl(url.toString()),
+                ),
               const SizedBox(height: 10),
               Text('词栖 · 0.3.3', style: theme.textTheme.titleSmall),
             ],

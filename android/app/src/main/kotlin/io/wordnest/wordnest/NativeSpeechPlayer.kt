@@ -145,16 +145,34 @@ internal class NativeSpeechPlayer(private val context: Context, private val chan
     }
 
     fun openSettings(installData: Boolean, engine: String?, result: MethodChannel.Result) {
-        try {
-            val intent = Intent(if (installData) TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA
-                else "com.android.settings.TTS_SETTINGS")
-            if (installData && !engine.isNullOrBlank()) intent.setPackage(engine)
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            context.startActivity(intent)
-            result.success(null)
-        } catch (error: Exception) {
-            result.error("tts_settings_unavailable", "系统没有对应设置/语音安装页，请手动进入系统设置安装英语语音：${error.message}", null)
+        // Build an ordered list of fallback intents. Some ROMs ship no
+        // INSTALL_TTS_DATA handler, so degrade to the TTS settings screen and
+        // finally the main system settings instead of crashing the handoff.
+        val intents = mutableListOf<Intent>()
+        if (installData) {
+            intents += Intent(TextToSpeech.Engine.ACTION_INSTALL_TTS_DATA).apply {
+                if (!engine.isNullOrBlank()) setPackage(engine)
+            }
         }
+        intents += Intent("com.android.settings.TTS_SETTINGS")
+        intents += Intent(android.provider.Settings.ACTION_SETTINGS)
+
+        var lastError: Exception? = null
+        for (intent in intents) {
+            try {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                context.startActivity(intent)
+                result.success(null)
+                return
+            } catch (error: Exception) {
+                lastError = error
+            }
+        }
+        result.error(
+            "tts_settings_unavailable",
+            "系统没有文字转语音设置或语音安装页，请手动进入系统设置安装英语语音：${lastError?.message}",
+            null
+        )
     }
 
     fun stop() { tts?.stop() }

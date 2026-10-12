@@ -5,8 +5,18 @@ import '../platform/updater_download_service.dart';
 
 /// Independent state avoids coupling the updater to appearance/app lifecycle.
 class UpdateDownloadPanel extends StatefulWidget {
-  const UpdateDownloadPanel({super.key, required this.updates});
+  const UpdateDownloadPanel({
+    super.key,
+    required this.updates,
+    this.onOpenInBrowser,
+  });
   final UpdateService updates;
+
+  /// Optional handoff to the system browser for the release download URL.
+  /// When provided, a secondary "在浏览器下载" button is shown so users can
+  /// fall back to the system downloader if the in-app stream stalls.
+  final Future<void> Function(Uri url)? onOpenInBrowser;
+
   @override
   State<UpdateDownloadPanel> createState() => _UpdateDownloadPanelState();
 }
@@ -73,6 +83,7 @@ class _UpdateDownloadPanelState extends State<UpdateDownloadPanel> {
           ],
           Wrap(
             spacing: 8,
+            runSpacing: 8,
             children: [
               if (metadata != null)
                 OutlinedButton(
@@ -80,6 +91,14 @@ class _UpdateDownloadPanelState extends State<UpdateDownloadPanel> {
                       ? null
                       : () => download.download(metadata),
                   child: const Text('下载更新'),
+                ),
+              if (metadata != null && widget.onOpenInBrowser != null)
+                OutlinedButton.icon(
+                  onPressed: download.busy && download.installer == null
+                      ? null
+                      : () => widget.onOpenInBrowser!(metadata.downloadUrl),
+                  icon: const Icon(Icons.open_in_browser_outlined, size: 18),
+                  label: const Text('在浏览器下载'),
                 ),
               if (download.busy && download.installer == null)
                 TextButton(
@@ -93,6 +112,17 @@ class _UpdateDownloadPanelState extends State<UpdateDownloadPanel> {
                 ),
             ],
           ),
+          if (metadata != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(
+                '应用内下载偶发不稳定时，可改用「在浏览器下载」交给系统下载器；下载完成后从浏览器或通知栏安装即可。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  height: 1.5,
+                ),
+              ),
+            ),
         ],
       );
     },

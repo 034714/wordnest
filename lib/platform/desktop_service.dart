@@ -16,6 +16,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../domain/models.dart';
 import 'native_platform.dart';
+import 'safe_http.dart';
 import 'word_audio_service.dart';
 
 /// Data-only reminder input for one Android scheduled notification.
@@ -249,6 +250,33 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
   final WordAudioService _wordAudio;
   int _speechGeneration = 0;
 
+  /// Opens a public http(s) URL in the system browser. Returns true when the
+  /// OS accepted the handoff; never reads the page. Invalid/private URLs are
+  /// rejected before any process or intent is created.
+  Future<bool> openUrl(String url) async {
+    try {
+      final uri = validatePublicHttpUrl(url);
+      if (isAndroid) {
+        await _calendarChannel.invokeMethod<void>('openUrl', {
+          'url': uri.toString(),
+        });
+      } else if (isWindows) {
+        final system = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+        final result = await Process.run('$system\\System32\\rundll32.exe', [
+          'url.dll,FileProtocolHandler',
+          uri.toString(),
+        ], runInShell: false);
+        if (result.exitCode != 0) throw StateError('系统没有可用的浏览器关联');
+      } else {
+        throw StateError('当前平台不支持打开外部链接');
+      }
+      return true;
+    } catch (error) {
+      _setError('无法打开链接：$error');
+      return false;
+    }
+  }
+
   Future<void> openTtsSettings({bool installData = false}) async {
     try {
       if (isAndroid) {
@@ -265,7 +293,7 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
         if (result.exitCode != 0) throw StateError('系统设置启动失败');
       }
     } catch (error) {
-      _audioError('无法打开语音设置：$error。请手动进入系统设置的文字转语音/语音，安装英语语音。');
+      _audioError('无法打开语音设置：$error。请手动进入系统设置的文字转语音/语音，安装英语语音；不装也能用，词音频由有道提供。');
     }
   }
 
