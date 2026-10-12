@@ -104,6 +104,15 @@ void main() {
     expect((await store.load()).settings.soundPack, 'soft');
     final legacy = settings.toJson()..remove('soundPack');
     expect(AppSettings.fromJson(BackupCodec.migrateSettings(legacy)).soundPack, 'classic');
+    expect(AppSettings().soundPack, 'classic');
+    for (final pack in AppSettings.soundPackLabels.keys) {
+      settings.soundPack = pack;
+      await store.saveSettings(settings);
+      expect((await store.load()).settings.soundPack, pack);
+      expect(AppSettings.fromJson(settings.toJson()).soundPack, pack);
+    }
+    settings.soundPack = 'soft';
+    await store.saveSettings(settings);
     settings.soundPack = 'unknown';
     await expectLater(store.saveSettings(settings), throwsFormatException);
     expect((await store.load()).settings.soundPack, 'soft');
@@ -120,7 +129,8 @@ void main() {
     for (final pack in AppSettings.soundPackLabels.keys) {
       await service.playStudySound('key', pack: pack, preview: true);
     }
-    expect(played.map((p) => p['pack']), ['classic', 'soft', 'digital']);
+    expect(played.map((p) => p['pack']),
+        ['classic', 'soft', 'digital', 'mechanical', 'chime', 'click']);
     settings..sound = true..soundPack = 'digital';
     await service.playStudySound('correct');
     expect(played.last['pack'], 'digital');
@@ -130,6 +140,19 @@ void main() {
       File('$root/study_soft_key.wav').readAsBytesSync(),
       File('$root/study_digital_key.wav').readAsBytesSync(),
     ];
+    for (final pack in ['mechanical', 'chime', 'click']) {
+      for (final effect in ['key', 'correct', 'incorrect']) {
+        final wav = File('$root/study_${pack}_$effect.wav').readAsBytesSync();
+        expect(String.fromCharCodes(wav.take(4)), 'RIFF');
+        expect(String.fromCharCodes(wav.skip(8).take(4)), 'WAVE');
+        expect(wav.length, greaterThan(1000));
+        expect(wav.length, lessThan(20000));
+        for (final previous in bytes) {
+          expect(listEquals(previous, wav), isFalse);
+        }
+        bytes.add(wav);
+      }
+    }
     expect(listEquals(bytes[0], bytes[1]), isFalse);
     expect(listEquals(bytes[1], bytes[2]), isFalse);
   });

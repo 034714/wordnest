@@ -37,7 +37,13 @@ internal class StudySoundPlayer(context: Context) {
             "soft/key" to R.raw.study_soft_key, "soft/correct" to R.raw.study_soft_correct,
             "soft/incorrect" to R.raw.study_soft_incorrect,
             "digital/key" to R.raw.study_digital_key, "digital/correct" to R.raw.study_digital_correct,
-            "digital/incorrect" to R.raw.study_digital_incorrect).forEach { (name, resource) ->
+            "digital/incorrect" to R.raw.study_digital_incorrect,
+            "mechanical/key" to R.raw.study_mechanical_key, "mechanical/correct" to R.raw.study_mechanical_correct,
+            "mechanical/incorrect" to R.raw.study_mechanical_incorrect,
+            "chime/key" to R.raw.study_chime_key, "chime/correct" to R.raw.study_chime_correct,
+            "chime/incorrect" to R.raw.study_chime_incorrect,
+            "click/key" to R.raw.study_click_key, "click/correct" to R.raw.study_click_correct,
+            "click/incorrect" to R.raw.study_click_incorrect).forEach { (name, resource) ->
             sounds[name] = pool.load(context, resource, 1)
         }
     }

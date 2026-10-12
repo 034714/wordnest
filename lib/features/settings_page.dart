@@ -556,7 +556,7 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               _SettingRow(
                 title: '音效套装',
-                subtitle: 'Android：三套离线声音，一键切换；试听不改变开关。Windows 暂用系统提示音。',
+                subtitle: 'Android：六套离线声音，新增三套原创短音；试听不改变开关。Windows 暂用系统提示音。',
                 trailing: Wrap(
                   spacing: 6,
                   runSpacing: 6,

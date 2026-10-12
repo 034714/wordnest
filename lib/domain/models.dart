@@ -247,6 +247,9 @@ class AppSettings {
     'classic': '清脆键盘',
     'soft': '柔和木音',
     'digital': '电子脉冲',
+    'mechanical': '机械轻轴',
+    'chime': '清亮弹音',
+    'click': '轻柔短 click',
   };
   String soundPack;
   String activeBookId, theme, globalHotkey, examDate, learningOrder, copyStyle;
