@@ -13,6 +13,7 @@ export 'safe_http.dart'
         FakeIpDnsException,
         FetchResponse,
         PinnedFetch,
+        HostnameFetch,
         ProxiedFetch,
         ProxyProbe,
         defaultSystemProxy,
@@ -44,7 +45,15 @@ class UpdateCheckResult {
 }
 
 class UpdateMetadata {
-  const UpdateMetadata(this.version, this.platform, this.downloadUrl);
+  const UpdateMetadata(
+    this.version,
+    this.platform,
+    this.downloadUrl, {
+    this.sizeBytes,
+    this.sha256,
+  });
+  final int? sizeBytes;
+  final String? sha256;
   final String version;
   final String platform;
   final Uri downloadUrl;
@@ -97,7 +106,22 @@ UpdateMetadata parseUpdateMetadata(String body, {required String platform}) {
   )) {
     throw const FormatException('下载文件类型与平台不匹配');
   }
-  return UpdateMetadata(version, platform, url);
+  final size = data['sizeBytes'];
+  final hash = data['sha256'];
+  if (size != null && (size is! int || size <= 0 || size > 512 * 1024 * 1024)) {
+    throw const FormatException('安装包大小无效');
+  }
+  if (hash != null &&
+      (hash is! String || !RegExp(r'^[a-fA-F0-9]{64}$').hasMatch(hash))) {
+    throw const FormatException('SHA256 无效');
+  }
+  return UpdateMetadata(
+    version,
+    platform,
+    url,
+    sizeBytes: size as int?,
+    sha256: (hash as String?)?.toLowerCase(),
+  );
 }
 
 /// Fetches metadata only; never downloads or executes installers.
@@ -107,6 +131,7 @@ class UpdateService extends ChangeNotifier {
     PinnedFetch? transport,
     ProxyProbe? proxyProbe,
     ProxiedFetch? proxiedFetch,
+    HostnameFetch? hostnameFetch,
     DateTime Function()? now,
     this.timeout = requestTimeout,
   }) : _resolver = resolver ?? InternetAddress.lookup,
@@ -114,9 +139,12 @@ class UpdateService extends ChangeNotifier {
        // ignore: prefer_initializing_formals
        _transport = transport,
        // ignore: prefer_initializing_formals
-       _proxyProbe = proxyProbe,
+       _proxyProbe =
+           proxyProbe ?? (transport != null ? (_) async => null : null),
        // ignore: prefer_initializing_formals
        _proxiedFetch = proxiedFetch,
+       // ignore: prefer_initializing_formals
+       _hostnameFetch = hostnameFetch,
        _now = now ?? DateTime.now;
 
   static const maxBodyBytes = 64 * 1024;
@@ -142,6 +170,7 @@ class UpdateService extends ChangeNotifier {
   final PinnedFetch? _transport;
   final ProxyProbe? _proxyProbe;
   final ProxiedFetch? _proxiedFetch;
+  final HostnameFetch? _hostnameFetch;
   final DateTime Function() _now;
   final Duration timeout;
   SharedPreferences? _prefs;
@@ -278,6 +307,7 @@ class UpdateService extends ChangeNotifier {
           transport: _transport,
           proxyProbe: _proxyProbe,
           proxiedFetch: _proxiedFetch,
+          hostnameFetch: _hostnameFetch,
         );
         final responseStatus = response.statusCode;
         if (responseStatus != HttpStatus.ok) {

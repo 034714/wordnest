@@ -9,6 +9,7 @@ const _trustedHosts = [
   'release-assets.githubusercontent.com',
   'objects.githubusercontent.com',
   'api.github.com',
+  'dict.youdao.com',
 ];
 
 class _PolicyHarness {
@@ -17,12 +18,15 @@ class _PolicyHarness {
     this.proxy = '127.0.0.1:7890',
     this.pinnedFetch,
     this.proxiedFetch,
+    this.hostnameFetch,
   });
 
   final AddressResolver resolver;
   final String? proxy;
   final PinnedFetch? pinnedFetch;
   final ProxiedFetch? proxiedFetch;
+  final HostnameFetch? hostnameFetch;
+  final hostnameUris = <Uri>[];
   final resolvedHosts = <String>[];
   final pinnedUris = <Uri>[];
   final pinnedAddresses = <InternetAddress>[];
@@ -50,6 +54,10 @@ class _PolicyHarness {
       proxyProbes.add(uri);
       return proxy;
     },
+    hostnameFetch: (uri) async {
+      hostnameUris.add(uri);
+      return await hostnameFetch?.call(uri) ?? const FetchResponse(200, []);
+    },
     proxiedFetch: (uri, endpoint) async {
       proxiedUris.add(uri);
       proxyEndpoints.add(endpoint);
@@ -62,10 +70,40 @@ class _PolicyHarness {
     expect(pinnedUris, isEmpty);
     expect(proxyProbes, isEmpty);
     expect(proxiedUris, isEmpty);
+    expect(hostnameUris, isEmpty);
   }
 }
 
+class _RealHttpOverrides extends HttpOverrides {}
+
 void main() {
+  test(
+    'opt-in live trusted hostname transport with fake-IP preflight',
+    () async {
+      await HttpOverrides.runWithHttpOverrides(() async {
+        for (final url in [
+          'https://raw.githubusercontent.com/034714/wordnest/main/docs/update-feed-android.json',
+          'https://raw.githubusercontent.com/KyleBing/english-vocabulary/c4c6c80879ff17d7025c28fb853a4991c8e6be6a/1%20%E5%88%9D%E4%B8%AD-%E4%B9%B1%E5%BA%8F.txt',
+          'https://dict.youdao.com/dictvoice?audio=apple&type=2',
+        ]) {
+          final result = await safeHttpGet(
+            uri: Uri.parse(url),
+            resolver: (_) async => [InternetAddress('198.18.0.58')],
+            proxyProbe: (_) async => null,
+            timeout: const Duration(seconds: 25),
+            maxBodyBytes: 2 * 1024 * 1024,
+          );
+          // ignore: avoid_print
+          print(
+            'LIVE $url status=${result.statusCode} bytes=${result.body.length}',
+          );
+          expect(result.statusCode, 200);
+          expect(result.body, isNotEmpty);
+        }
+      }, _RealHttpOverrides());
+    },
+    skip: Platform.environment['WORDNEST_LIVE_NETWORK'] != '1',
+  );
   test('only benchmark IPv4 DNS answers count as fake-ip', () {
     for (final address in [
       '198.18.0.0',
@@ -191,6 +229,8 @@ void main() {
         'sub.raw.githubusercontent.com',
         'github.com.evil.example',
         'objects.github.com',
+        'dict.youdao.com.evil.example',
+        'sub.dict.youdao.com',
       ]) {
         const error = SocketException('DNS lookup failed');
         final failed = _PolicyHarness(resolver: (_) async => throw error);
@@ -267,16 +307,78 @@ void main() {
     },
   );
 
-  test('trusted fake-ip without proxy reports guidance, never pins', () async {
-    final harness = _PolicyHarness(
-      resolver: (_) async => [InternetAddress('198.18.0.1')],
-      proxy: null,
-    );
-    await expectLater(harness.get(), throwsA(isA<FakeIpDnsException>()));
-    expect(harness.proxyProbes, hasLength(1));
-    expect(harness.pinnedUris, isEmpty);
-    expect(harness.proxiedUris, isEmpty);
-  });
+  test(
+    'VPN fake-ip without HTTP proxy connects only exact trusted hostname',
+    () async {
+      for (final host in _trustedHosts) {
+        final harness = _PolicyHarness(
+          resolver: (_) async => [InternetAddress('198.18.0.1')],
+          proxy: null,
+        );
+        expect((await harness.get('https://$host/feed.json')).statusCode, 200);
+        expect(harness.hostnameUris.single.host, host);
+        expect(harness.pinnedUris, isEmpty);
+        expect(harness.proxiedUris, isEmpty);
+      }
+    },
+  );
+
+  test(
+    'VPN hostname route repeats private/mixed and source redirect gates',
+    () async {
+      for (final target in ['github.com', 'updates.example.com']) {
+        for (final addresses in [
+          ['127.0.0.1'],
+          ['10.0.0.1'],
+          ['fc00::1'],
+          ['198.18.0.1', 'fd00::1'],
+          ['198.18.0.1', '8.8.8.8'],
+          if (target == 'updates.example.com') ['198.18.0.1'],
+        ]) {
+          final harness = _PolicyHarness(
+            resolver: (host) async => host == 'raw.githubusercontent.com'
+                ? [InternetAddress('198.18.0.1')]
+                : addresses.map(InternetAddress.new).toList(),
+            proxy: null,
+            hostnameFetch: (_) async =>
+                FetchResponse(302, [], location: 'https://$target/redirect'),
+          );
+          await expectLater(harness.get(), throwsFormatException);
+          expect(harness.hostnameUris, hasLength(1));
+          expect(harness.pinnedUris, isEmpty);
+          expect(harness.proxiedUris, isEmpty);
+        }
+      }
+    },
+  );
+
+  test(
+    'VPN without HTTP proxy never accepts private/ULA/mixed or user hosts',
+    () async {
+      for (final host in [..._trustedHosts, 'updates.example.com']) {
+        for (final addresses in [
+          ['127.0.0.1'],
+          ['10.0.0.1'],
+          ['fc00::1'],
+          ['fd00::1'],
+          ['8.8.8.8', '127.0.0.1'],
+          ['198.18.0.1', 'fc00::1'],
+          ['198.18.0.1', '8.8.8.8'],
+          if (host == 'updates.example.com') ['198.18.0.1'],
+        ]) {
+          final harness = _PolicyHarness(
+            resolver: (_) async => addresses.map(InternetAddress.new).toList(),
+            proxy: null,
+          );
+          await expectLater(
+            harness.get('https://$host/feed.json'),
+            throwsFormatException,
+          );
+          harness.expectNoTransportOrProxy();
+        }
+      }
+    },
+  );
 
   test('trusted DNS failure without proxy preserves the DNS error', () async {
     const error = SocketException('DNS lookup failed');
@@ -290,34 +392,42 @@ void main() {
     expect(harness.proxiedUris, isEmpty);
   });
 
-  test('all-public DNS pins the first address, never probes a proxy', () async {
-    for (final host in ['raw.githubusercontent.com', 'updates.example.com']) {
-      for (final addresses in [
-        ['8.8.8.8', '2606:4700:4700::1111'],
-        ['2606:4700:4700::1111', '8.8.8.8'],
-      ]) {
-        final harness = _PolicyHarness(
-          resolver: (_) async => addresses.map(InternetAddress.new).toList(),
-        );
-        expect((await harness.get('https://$host/feed.json')).statusCode, 200);
-        expect(harness.pinnedUris.single.host, host);
-        expect(harness.pinnedAddresses.single.address, addresses.first);
-        expect(harness.resolvedHosts, [host]);
-        expect(harness.proxyProbes, isEmpty);
-        expect(harness.proxiedUris, isEmpty);
+  test(
+    'all-public DNS pins the first address when no proxy is configured',
+    () async {
+      for (final host in ['raw.githubusercontent.com', 'updates.example.com']) {
+        for (final addresses in [
+          ['8.8.8.8', '2606:4700:4700::1111'],
+          ['2606:4700:4700::1111', '8.8.8.8'],
+        ]) {
+          final harness = _PolicyHarness(
+            resolver: (_) async => addresses.map(InternetAddress.new).toList(),
+            proxy: null,
+          );
+          expect(
+            (await harness.get('https://$host/feed.json')).statusCode,
+            200,
+          );
+          expect(harness.pinnedUris.single.host, host);
+          expect(harness.pinnedAddresses.single.address, addresses.first);
+          expect(harness.resolvedHosts, [host]);
+          expect(harness.proxyProbes, hasLength(1));
+          expect(harness.proxiedUris, isEmpty);
+        }
       }
-    }
-  });
+    },
+  );
 
   test('pinned transport failure never broadens proxy fallback', () async {
     const error = SocketException('connection failed');
     final harness = _PolicyHarness(
       resolver: (_) async => [InternetAddress('8.8.8.8')],
       pinnedFetch: (_, _) async => throw error,
+      proxy: null,
     );
     await expectLater(harness.get(), throwsA(same(error)));
     expect(harness.pinnedUris, hasLength(1));
-    expect(harness.proxyProbes, isEmpty);
+    expect(harness.proxyProbes, hasLength(1));
     expect(harness.proxiedUris, isEmpty);
   });
 
@@ -430,32 +540,30 @@ void main() {
         'raw.githubusercontent.com',
       ]);
       expect(harness.pinnedUris.length + harness.proxiedUris.length, 1);
-      expect(harness.proxyProbes.length, firstAddress == '8.8.8.8' ? 0 : 1);
+      expect(harness.proxyProbes.length, 1);
     }
   });
 
-  test(
-    'trusted redirect with public DNS switches from proxy to pinning',
-    () async {
-      final harness = _PolicyHarness(
-        resolver: (host) async => [
-          InternetAddress(host == 'github.com' ? '8.8.8.8' : '198.18.0.1'),
-        ],
-        proxiedFetch: (_, _) async => const FetchResponse(
-          302,
-          [],
-          location: 'https://github.com/redirect.json',
-        ),
-      );
-      expect((await harness.get()).statusCode, 200);
-      expect(harness.resolvedHosts, [
-        'raw.githubusercontent.com',
-        'github.com',
-      ]);
-      expect(harness.proxyProbes, hasLength(1));
-      expect(harness.proxiedUris.single.host, 'raw.githubusercontent.com');
-      expect(harness.pinnedUris.single.host, 'github.com');
-      expect(harness.pinnedAddresses.single.address, '8.8.8.8');
-    },
-  );
+  test('trusted redirect with public DNS continues configured proxy', () async {
+    final harness = _PolicyHarness(
+      resolver: (host) async => [
+        InternetAddress(host == 'github.com' ? '8.8.8.8' : '198.18.0.1'),
+      ],
+      proxiedFetch: (uri, _) async => uri.host == 'github.com'
+          ? const FetchResponse(200, [])
+          : const FetchResponse(
+              302,
+              [],
+              location: 'https://github.com/redirect.json',
+            ),
+    );
+    expect((await harness.get()).statusCode, 200);
+    expect(harness.resolvedHosts, ['raw.githubusercontent.com', 'github.com']);
+    expect(harness.proxyProbes, hasLength(2));
+    expect(harness.proxiedUris.map((uri) => uri.host), [
+      'raw.githubusercontent.com',
+      'github.com',
+    ]);
+    expect(harness.pinnedUris, isEmpty);
+  });
 }

@@ -460,6 +460,7 @@ class BackupCodec {
       'materialMode',
       'navigationStyle',
       'questionDirection',
+      'soundPack',
     ];
     const ints = [
       'roundSize',
@@ -536,6 +537,9 @@ class BackupCodec {
         _ => false,
       };
       if (!valid) throw FormatException('备份内容错误：settings.$field超出范围');
+    }
+    if (!AppSettings.soundPackLabels.containsKey(settings['soundPack'])) {
+      throw const FormatException('备份内容错误：settings.soundPack无效');
     }
     final accent = _expectInt(settings, 'accentArgb', 'settings');
     if (accent < 0xff000000 || accent > 0xffffffff) {

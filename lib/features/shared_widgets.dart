@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../domain/controller.dart';
 import '../domain/models.dart';
 import '../data/offline_dictionary.dart';
+import '../platform/appearance_service.dart';
 
 typedef StartRoundCallback = Future<void> Function(
   String mode, {
@@ -246,15 +247,21 @@ class SurfaceMaterial extends StatelessWidget {
     final theme = Theme.of(context);
     final appearance =
         theme.extension<AppearanceTheme>() ?? const AppearanceTheme();
-    final material = Material(
-      color: (color ?? theme.colorScheme.surface).withValues(
-        alpha: appearance.surfaceOpacity.clamp(.2, 1),
-      ),
-      shape: RoundedRectangleBorder(
-        borderRadius: borderRadius,
-        side: border ?? BorderSide.none,
-      ),
+    final material = ValueListenableBuilder<double?>(
+      valueListenable: surfaceOpacityPreview,
       child: child,
+      builder: (context, preview, content) => Material(
+        // Do not animate behind the pointer or when handing off to storage.
+        animationDuration: Duration.zero,
+        color: (color ?? theme.colorScheme.surface).withValues(
+          alpha: (preview ?? appearance.surfaceOpacity).clamp(.2, 1),
+        ),
+        shape: RoundedRectangleBorder(
+          borderRadius: borderRadius,
+          side: border ?? BorderSide.none,
+        ),
+        child: content,
+      ),
     );
     return ClipRRect(
       borderRadius: borderRadius,
@@ -283,12 +290,9 @@ class SurfaceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final appearance = theme.extension<AppearanceTheme>();
     final content = Padding(padding: padding, child: child);
-    if (appearance == null ||
-        (!appearance.glass && appearance.surfaceOpacity == 1)) {
-      return Card(color: color, child: content);
-    }
+    // Keep one tree even at 100%: swapping Card for SurfaceMaterial during
+    // a drag would recreate the slider and lose its gesture/state.
     final shape = theme.cardTheme.shape;
     final rounded = shape is RoundedRectangleBorder ? shape : null;
     return SurfaceMaterial(

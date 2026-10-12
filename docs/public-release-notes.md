@@ -1,6 +1,6 @@
-# WordNest 0.3.1 public-source preparation
+# WordNest 0.3.3 public-source preparation
 
-This update includes the current local-first learning, notebook and appearance changes. Library alphabetical and note-first sorting now preserve source order for equal keys. Version metadata is aligned to `0.3.1+4`. Release upload and native signing verification are separate steps; prepared update-feed URLs are not evidence that assets have been uploaded.
+This update includes the current local-first learning, notebook and appearance changes. Library alphabetical and note-first sorting now preserve source order for equal keys. Version metadata is aligned to `0.3.3+6`. Release upload and native signing verification are separate steps; prepared update-feed URLs are not evidence that assets have been uploaded.
 
 This is a sanitized source export, not a published release or a verified native build. The owner confirmed GitHub account `034714` and the proposed new public repository `034714/wordnest`; its name was available when checked. No repository creation or upload has been performed by the exporter.
 
@@ -35,7 +35,7 @@ Windows builds need Visual Studio's Desktop development with C++ workload and th
 
 The Android release signing configuration is managed separately. Never commit keys or credentials; verify the final APK certificate before distribution. No private signing material is part of this source export. Windows artifacts are not code-signed by this export.
 
-The source retains Android application ID `io.wordnest.wordnest` and version `0.3.1+4`; MSIX metadata is aligned to `0.3.1.0`. Replacing an existing installation with the same ID can reuse its local learning data, and Android upgrades additionally require a matching signing certificate. Back up user data first. This source is not intended to erase or sanitize an existing user's database.
+The source retains Android application ID `io.wordnest.wordnest` and version `0.3.3+6`; MSIX metadata is aligned to `0.3.3.0`. Replacing an existing installation with the same ID can reuse its local learning data, and Android upgrades additionally require a matching signing certificate. Back up user data first. This source is not intended to erase or sanitize an existing user's database.
 
 The web scaffold is retained, but native-only features mean web functionality is not asserted here. Native build/test verification is still required after exporting.
 

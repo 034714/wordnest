@@ -251,16 +251,22 @@ void main() {
   test(
     'published docs feeds parse and same version reports upToDate',
     () async {
+      final pubspec = File('pubspec.yaml').readAsStringSync();
+      final version = RegExp(
+        r'^version:\s*(\S+)',
+        multiLine: true,
+      ).firstMatch(pubspec)!.group(1)!;
+      final releaseVersion = version.split('+').first;
       for (final platform in ['windows', 'android']) {
         final file = File('docs/update-feed-$platform.json');
         expect(file.existsSync(), isTrue, reason: file.path);
         final text = file.readAsStringSync();
         final parsed = parseUpdateMetadata(text, platform: platform);
-        expect(parsed.version, '0.3.1+4');
+        expect(parsed.version, version);
         expect(parsed.downloadUrl.host, 'github.com');
         expect(
           parsed.downloadUrl.path,
-          contains('/034714/wordnest/releases/download/v0.3.1/'),
+          contains('/034714/wordnest/releases/download/v$releaseVersion/'),
         );
         var calls = 0;
         SharedPreferences.setMockInitialValues({});
@@ -279,7 +285,7 @@ void main() {
         );
         await service.initialize();
         final result = await service.check(
-          currentVersion: '0.3.1+4',
+          currentVersion: version,
           platform: platform,
         );
         expect(result.state, UpdateState.upToDate);
@@ -572,34 +578,40 @@ void main() {
     service.dispose();
   });
 
-  test('fake-ip DNS without proxy reports fake-ip guidance', () async {
-    SharedPreferences.setMockInitialValues({});
-    var calls = 0;
-    final service = UpdateService(
-      resolver: (_) async => [InternetAddress('198.18.0.58')],
-      transport: (_, _) async {
-        calls++;
-        return const FetchResponse(200, []);
-      },
-      proxyProbe: (_) async => null,
-      proxiedFetch: (_, _) async {
-        calls++;
-        return const FetchResponse(200, []);
-      },
-    );
-    await service.initialize();
-    final result = await service.check(
-      currentVersion: '0.1.0',
-      platform: 'android',
-    );
-    expect(result.state, UpdateState.error);
-    expect(result.message, contains('fake-ip'));
-    expect(result.message, contains('系统代理'));
-    expect(calls, 0);
-    service.dispose();
-  });
+  test(
+    'VPN fake-ip without HTTP proxy uses hostname; errors remain visible',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      var calls = 0;
+      final service = UpdateService(
+        resolver: (_) async => [InternetAddress('198.18.0.58')],
+        transport: (_, _) async {
+          calls++;
+          return const FetchResponse(200, []);
+        },
+        proxyProbe: (_) async => null,
+        hostnameFetch: (uri) async {
+          expect(uri.host, 'raw.githubusercontent.com');
+          throw const SocketException('VPN route unavailable');
+        },
+        proxiedFetch: (_, _) async {
+          calls++;
+          return const FetchResponse(200, []);
+        },
+      );
+      await service.initialize();
+      final result = await service.check(
+        currentVersion: '0.1.0',
+        platform: 'android',
+      );
+      expect(result.state, UpdateState.error);
+      expect(result.message, contains('VPN route unavailable'));
+      expect(calls, 0);
+      service.dispose();
+    },
+  );
 
-  test('public DNS keeps pinned path and never probes proxy', () async {
+  test('public DNS honors configured system proxy', () async {
     SharedPreferences.setMockInitialValues({});
     var pinned = 0;
     var probes = 0;
@@ -620,7 +632,10 @@ void main() {
       },
       proxiedFetch: (_, _) async {
         proxied++;
-        return const FetchResponse(200, []);
+        return FetchResponse(
+          200,
+          utf8.encode(metadata(version: '0.2.0', platform: 'android')),
+        );
       },
     );
     await service.initialize();
@@ -628,9 +643,9 @@ void main() {
       (await service.check(currentVersion: '0.1.0', platform: 'android')).state,
       UpdateState.available,
     );
-    expect(pinned, 1);
-    expect(probes, 0);
-    expect(proxied, 0);
+    expect(pinned, 0);
+    expect(probes, 1);
+    expect(proxied, 1);
     service.dispose();
   });
 
@@ -641,7 +656,7 @@ void main() {
       resolver: (_) async => [InternetAddress('8.8.8.8')],
       transport: (_, _) async =>
           const FetchResponse(302, [], location: 'https://127.0.0.1/x.json'),
-      proxyProbe: (_) async => '127.0.0.1:7890',
+      proxyProbe: (_) async => null,
       proxiedFetch: (_, _) async {
         proxied++;
         return const FetchResponse(200, []);

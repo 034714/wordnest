@@ -222,25 +222,22 @@ void main() {
     expect(pinned, 0);
   });
 
-  test('fake-ip DNS without proxy reports fake-ip guidance', () async {
-    final service = CatalogService(
-      resolver: (_) async => [InternetAddress('198.18.0.58')],
-      proxyProbe: (_) async => null,
-    );
-    final book = (await service.list()).firstWhere(
-      (b) => b.id == 'kylebing-cet4',
-    );
-    await expectLater(
-      service.fetch(book),
-      throwsA(
-        isA<CatalogError>()
-            .having((e) => e.message, 'message', contains('fake-ip'))
-            .having(
-              (e) => e.message,
-              'message',
-              contains('关闭 fake-ip 或改用系统代理模式'),
-            ),
-      ),
-    );
-  });
+  test(
+    'VPN fake-ip without HTTP proxy downloads by original hostname',
+    () async {
+      final service = CatalogService(
+        resolver: (_) async => [InternetAddress('198.18.0.58')],
+        proxyProbe: (_) async => null,
+        hostnameFetch: (uri) async {
+          expect(uri.host, 'raw.githubusercontent.com');
+          return FetchResponse(200, utf8.encode('abandon\tv.放弃\n'));
+        },
+      );
+      final book = (await service.list()).firstWhere(
+        (b) => b.id == 'kylebing-cet4',
+      );
+      final download = await service.fetch(book);
+      expect(download.text, 'abandon\tv.放弃\n');
+    },
+  );
 }

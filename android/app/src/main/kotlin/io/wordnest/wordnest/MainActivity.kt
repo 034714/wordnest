@@ -9,9 +9,14 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private var studySounds: StudySoundPlayer? = null
+    private var nativeSpeech: NativeSpeechPlayer? = null
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/sound")
+            .setMethodCallHandler(null)
+        nativeSpeech?.release()
+        nativeSpeech = null
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/tts")
             .setMethodCallHandler(null)
         studySounds?.release()
         studySounds = null
@@ -20,11 +25,28 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        val updater = UpdaterBridge(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/updater")
+            .setMethodCallHandler(updater::handle)
+        val speechChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/tts")
+        nativeSpeech = NativeSpeechPlayer(this, speechChannel)
+        speechChannel.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "playWordAudio" -> nativeSpeech?.playAudio(call.argument<String>("path"), result)
+                "stopWordAudio" -> { nativeSpeech?.stopAudio(); result.success(null) }
+                "openTtsSettings" -> nativeSpeech?.openSettings(false, call.argument<String>("engine"), result)
+                "installVoiceData" -> nativeSpeech?.openSettings(true, call.argument<String>("engine"), result)
+                "initialize" -> nativeSpeech?.initialize(call.argument<String>("engine"), result)
+                "speak" -> nativeSpeech?.speak(call.argument<String>("text"), result)
+                "stop" -> { nativeSpeech?.stop(); result.success(null) }
+                else -> result.notImplemented()
+            }
+        }
         studySounds = StudySoundPlayer(this)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/sound")
             .setMethodCallHandler { call, result ->
                 if (call.method == "play") {
-                    studySounds?.play(call.argument<String>("sound"), result)
+                    studySounds?.play(call.argument<String>("sound"), call.argument<String>("pack") ?: "classic", result)
                         ?: result.error("sound_unavailable", "Sound player unavailable", null)
                 } else result.notImplemented()
             }

@@ -1,5 +1,7 @@
 {
-  "version": "0.3.1+4",
+  "version": "0.3.3+6",
   "platform": "windows",
-  "downloadUrl": "https://github.com/034714/wordnest/releases/download/v0.3.1/WordNest-windows-x64-setup.exe"
+  "downloadUrl": "https://github.com/034714/wordnest/releases/download/v0.3.3/WordNest-windows-x64-setup.exe",
+  "sizeBytes": 13059800,
+  "sha256": "22650e6c1013a0ca502223dd645aaef093d7dcb72e9ac330fb87c52bbc4d0574"
 }

@@ -1,4 +1,4 @@
-词栖 WordNest 0.3.1 · 本地优先记词工具
+词栖 WordNest 0.3.3 · 本地优先记词工具
 
 Windows：完整解压便携 ZIP 后打开 wordnest.exe，DLL 和 data 不能删除。
 安装版按当前用户安装，默认不创建桌面快捷方式、不注册登录启动。

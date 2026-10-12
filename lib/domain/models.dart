@@ -216,6 +216,7 @@ class AppSettings {
     this.endHour = 21,
     this.reviewNotificationChinese = false,
     this.sound = false,
+    this.soundPack = 'classic',
     this.closeToTray = true,
     this.widgetSeconds = 30,
     this.widgetAuto = true,
@@ -242,6 +243,12 @@ class AppSettings {
     this.notebookRemoveAfterCorrect = 2,
     this.questionDirection = 'en2zh',
   });
+  static const soundPackLabels = {
+    'classic': '清脆键盘',
+    'soft': '柔和木音',
+    'digital': '电子脉冲',
+  };
+  String soundPack;
   String activeBookId, theme, globalHotkey, examDate, learningOrder, copyStyle;
   String backgroundAsset, materialMode, navigationStyle, questionDirection;
   int accentArgb;
@@ -300,6 +307,7 @@ class AppSettings {
     'endHour': endHour,
     'reviewNotificationChinese': reviewNotificationChinese,
     'sound': sound,
+    'soundPack': soundPack,
     'closeToTray': closeToTray,
     'widgetSeconds': widgetSeconds,
     'widgetAuto': widgetAuto,
@@ -351,6 +359,7 @@ class AppSettings {
       endHour: (d['endHour'] as int).clamp(0, 24),
       reviewNotificationChinese: d['reviewNotificationChinese'] as bool,
       sound: d['sound'] as bool,
+      soundPack: d['soundPack'] as String,
       closeToTray: d['closeToTray'] as bool,
       widgetSeconds: (d['widgetSeconds'] as int).clamp(5, 300),
       widgetAuto: d['widgetAuto'] as bool,

@@ -1,5 +1,7 @@
 {
-  "version": "0.3.1+4",
+  "version": "0.3.3+6",
   "platform": "android",
-  "downloadUrl": "https://github.com/034714/wordnest/releases/download/v0.3.1/WordNest-android.apk"
+  "downloadUrl": "https://github.com/034714/wordnest/releases/download/v0.3.3/WordNest-android.apk",
+  "sizeBytes": 23988859,
+  "sha256": "6cfcb48e3199cc8af8bc94ab0308010bd915db360b78cccf1895745821029510"
 }

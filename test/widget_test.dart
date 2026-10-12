@@ -93,6 +93,9 @@ void main() {
       expect(c.formalToday, 0);
       expect(find.text('read'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
+      // Drain bounded native stop timeouts scheduled by study teardown.
+      await tester.pump(const Duration(seconds: 3));
+      await tester.pump(const Duration(seconds: 3));
       tester.view.resetPhysicalSize();
     },
   );

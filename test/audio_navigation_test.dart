@@ -8,6 +8,12 @@ import 'package:wordnest/domain/controller.dart';
 import 'package:wordnest/domain/models.dart';
 import 'package:wordnest/features/study_page.dart';
 import 'package:wordnest/platform/desktop_service.dart';
+import 'package:wordnest/platform/word_audio_service.dart';
+
+class _UnavailableWordAudio extends WordAudioService {
+  @override
+  Future<void> play(String word) async => throw StateError('injected dictionary unavailable');
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -31,7 +37,7 @@ void main() {
       if (call.method == 'speak') return accepted ? 1 : 0;
       return 1;
     });
-    final service = DesktopService(onAudioError: errors.add);
+    final service = DesktopService(onAudioError: errors.add, wordAudio: _UnavailableWordAudio());
     await service.speak(' focus ');
     expect(
       calls.map((c) => c.method),
@@ -44,12 +50,13 @@ void main() {
         'speak',
       ]),
     );
-    expect(calls.first.arguments, 'en-US');
+    expect(calls.singleWhere((c) => c.method == 'isLanguageAvailable').arguments, 'en-US');
     expect(calls.singleWhere((c) => c.method == 'setVolume').arguments, 1.0);
-    expect(errors, isEmpty);
+    expect(errors, [contains('仅将当前英语词发送到有道公开词音频服务')]);
+    expect(service.audioError, isNull);
     accepted = false;
     await service.speak('read');
-    expect(errors.single, contains('朗读失败'));
+    expect(errors, [contains('仅将当前英语词'), contains('朗读失败')]);
     expect(service.lastError, contains('语音引擎拒绝'));
   });
 
@@ -63,9 +70,9 @@ void main() {
         calls.add(call.method);
         return call.method == 'isLanguageAvailable' ? available : 1;
       });
-      final service = DesktopService(onAudioError: errors.add);
+      final service = DesktopService(onAudioError: errors.add, wordAudio: _UnavailableWordAudio());
       await service.speak('focus');
-      expect(errors.single, contains('英语离线语音数据'));
+      expect(errors, [contains('仅将当前英语词'), contains('英语离线语音数据')]);
       expect(calls, isNot(contains('speak')));
       available = true;
       await service.speak('focus');
@@ -86,7 +93,7 @@ void main() {
         played.add((call.arguments as Map)['sound'] as String);
         return null;
       });
-      final service = DesktopService(onAudioError: errors.add);
+      final service = DesktopService(onAudioError: errors.add, wordAudio: _UnavailableWordAudio());
       final settings = AppSettings()
         ..tts = false
         ..sound = true;

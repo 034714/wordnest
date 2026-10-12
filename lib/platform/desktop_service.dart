@@ -16,6 +16,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../domain/models.dart';
 import 'native_platform.dart';
+import 'word_audio_service.dart';
 
 /// Data-only reminder input for one Android scheduled notification.
 class AndroidReminderWord {
@@ -44,7 +45,16 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
   DesktopService({
     FlutterLocalNotificationsPlugin? notifications,
     this.onAudioError,
-  }) : _notifications = notifications ?? FlutterLocalNotificationsPlugin();
+    WordAudioService? wordAudio,
+  }) : _wordAudio = wordAudio ?? WordAudioService(),
+       _notifications = notifications ?? FlutterLocalNotificationsPlugin() {
+    _nativeTtsChannel.setMethodCallHandler((call) async {
+      if (call.method == 'error') {
+        _ttsInitialization = null;
+        _audioError('朗读失败：${call.arguments}');
+      }
+    });
+  }
 
   final ValueChanged<String>? onAudioError;
   Future<void>? _ttsInitialization;
@@ -52,6 +62,7 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
   static const _soundChannel = MethodChannel('io.wordnest/sound');
 
   void _audioError(String message) {
+    audioError = message;
     _setError(message);
     // Avoid flooding the user on every key when audio is unavailable.
     if (_reportedAudioError != message) {
@@ -60,12 +71,25 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
     }
   }
 
-  Future<void> playStudySound(String sound) async {
-    if (_settings?.sound == false) return;
+  String? audioError;
+  List<String> ttsEngines = [];
+  String? selectedTtsEngine;
+  bool _nativeTts = false;
+  static const _nativeTtsChannel = MethodChannel('io.wordnest/tts');
+
+  Future<void> playStudySound(
+    String sound, {
+    String? pack,
+    bool preview = false,
+  }) async {
+    if (!preview && _settings?.sound == false) return;
     if (!const ['key', 'correct', 'incorrect'].contains(sound)) return;
     try {
       if (isAndroid) {
-        await _soundChannel.invokeMethod<void>('play', {'sound': sound});
+        await _soundChannel.invokeMethod<void>('play', {
+          'sound': sound,
+          'pack': pack ?? _settings?.soundPack ?? 'classic',
+        });
       } else if (isWindows) {
         // Windows' system alert is audible; Android uses bundled PCM instead.
         await SystemSound.play(SystemSoundType.alert);
@@ -75,25 +99,99 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
     }
   }
 
-  Future<void> _ensureTts() => _ttsInitialization ??= _initializeTts();
-
-  Future<void> _initializeTts() async {
+  Future<void> _ensureTts() async {
     try {
-      _tts.setErrorHandler((message) {
-        _ttsInitialization = null;
-        _audioError('朗读失败：$message。请检查系统文字转语音引擎和英语语音数据。');
-      });
-      if (await _tts.isLanguageAvailable('en-US') != true) {
-        throw StateError('系统没有可用的英语语音，请安装英语离线语音数据');
-      }
-      if (await _tts.setLanguage('en-US') != 1) {
-        throw StateError('无法设置英语朗读语言');
-      }
-      await _tts.setSpeechRate(0.45);
-      await _tts.setVolume(1.0);
+      await (_ttsInitialization ??= _initializeTts()).timeout(
+        const Duration(seconds: 12),
+      );
     } catch (_) {
       _ttsInitialization = null;
       rethrow;
+    }
+  }
+
+  Future<void> refreshTtsEngines() async {
+    if (!isAndroid) return;
+    try {
+      final values = await _tts.getEngines.timeout(const Duration(seconds: 12));
+      ttsEngines = (values as List).whereType<String>().toSet().toList();
+      notifyListeners();
+    } catch (error) {
+      _audioError('无法读取系统朗读引擎：$error');
+    }
+  }
+
+  Future<bool> retryTts({String? engine}) async {
+    try {
+      await stopSpeech();
+      if (engine != null) {
+        if (!ttsEngines.contains(engine)) throw StateError('该引擎已不可用，请刷新');
+        // flutter_tts 4.2.5 setEngine deliberately returns void, not a code.
+        await _tts.setEngine(engine).timeout(const Duration(seconds: 12));
+        selectedTtsEngine = engine;
+      }
+      _nativeTts = false;
+      _ttsInitialization = null;
+      await _ensureTts();
+      audioError = null;
+      _reportedAudioError = null;
+      notifyListeners();
+      return true;
+    } catch (error) {
+      _audioError('朗读初始化失败：$error。可切换引擎或安装英语语音数据后重试。');
+      return false;
+    }
+  }
+
+  Future<void> _initializeTts() async {
+    _tts.setErrorHandler((message) {
+      _ttsInitialization = null;
+      _audioError('朗读失败：$message。请检查系统文字转语音引擎和英语语音数据。');
+    });
+    try {
+      bool available;
+      if (isWindows) {
+        // Windows plugin has getLanguages, but no isLanguageAvailable API.
+        final languages = await _tts.getLanguages;
+        available =
+            languages is List &&
+            languages.any(
+              (value) =>
+                  value.toString().toLowerCase().replaceAll('_', '-') ==
+                  'en-us',
+            );
+      } else {
+        available = await _tts.isLanguageAvailable('en-US') == true;
+      }
+      if (!available) throw StateError('系统没有可用的英语语音，请安装英语离线语音数据');
+      // Plugin normalizes Android language success to 1 (NOT native LANG_*).
+      // Other backends can complete setters with null; don't treat that as failure.
+      final language = await _tts.setLanguage('en-US');
+      if (language == 0 ||
+          language == false ||
+          (language is num && language < 0)) {
+        throw StateError('无法设置英语朗读语言');
+      }
+      await _tts.setSpeechRate(0.45);
+      try {
+        await _tts.setVolume(1.0);
+      } on MissingPluginException {
+        // Optional setter: some desktop backends use system media volume only.
+      } on PlatformException {
+        // A volume setter failure does not mean there is no speech engine.
+      }
+      _nativeTts = false;
+    } catch (error) {
+      if (!isAndroid) rethrow;
+      // Local Android fallback only: no text/notes sent to a web service.
+      try {
+        await _nativeTtsChannel
+            .invokeMethod<void>('initialize', {'engine': selectedTtsEngine})
+            .timeout(const Duration(seconds: 10));
+        _nativeTts = true;
+      } catch (nativeError) {
+        throw StateError('$error；原生朗读也不可用：$nativeError');
+      }
     }
   }
 
@@ -148,9 +246,47 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
     notifyListeners();
   }
 
-  Future<void> stopSpeech() async {
+  final WordAudioService _wordAudio;
+  int _speechGeneration = 0;
+
+  Future<void> openTtsSettings({bool installData = false}) async {
     try {
-      await _tts.stop();
+      if (isAndroid) {
+        await _nativeTtsChannel.invokeMethod<void>(
+          installData ? 'installVoiceData' : 'openTtsSettings',
+          {'engine': selectedTtsEngine},
+        );
+      } else if (isWindows) {
+        final system = Platform.environment['SystemRoot'] ?? r'C:\Windows';
+        final result = await Process.run('$system\\System32\\rundll32.exe', [
+          'url.dll,FileProtocolHandler',
+          'ms-settings:speech',
+        ], runInShell: false);
+        if (result.exitCode != 0) throw StateError('系统设置启动失败');
+      }
+    } catch (error) {
+      _audioError('无法打开语音设置：$error。请手动进入系统设置的文字转语音/语音，安装英语语音。');
+    }
+  }
+
+  Future<void> stopSpeech() async {
+    _speechGeneration++;
+    try {
+      await _wordAudio.stop();
+    } catch (_) {
+      /* TTS stop must remain independent of audio stop. */
+    }
+    try {
+      await _tts.stop().timeout(const Duration(seconds: 2));
+    } catch (error) {
+      // A broken system engine must never block dictionary audio.
+    }
+    try {
+      if (isAndroid) {
+        await _nativeTtsChannel
+            .invokeMethod<void>('stop')
+            .timeout(const Duration(seconds: 2));
+      }
     } catch (error) {
       _setError('停止朗读失败：$error');
     }
@@ -551,19 +687,68 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
     }
   }
 
+  bool _wordAudioExplained = false;
+
   Future<void> speak(String word) async {
-    if (word.trim().isEmpty) return;
-    try {
-      if (_settings?.tts == false) return;
-      await _ensureTts();
-      await _tts.stop();
-      if (await _tts.speak(word.trim()) != 1) {
-        throw StateError('语音引擎拒绝朗读请求');
+    if (word.trim().isEmpty || _settings?.tts == false) return;
+    await stopSpeech();
+    final token = _speechGeneration;
+    // Dictionary recordings are independent of installed TTS engines. Try
+    // cache/network first rather than waiting for a broken system engine.
+    Object? dictionaryError;
+    if (isAndroid || isWindows) {
+      try {
+        WordAudioService.normalizeWord(word);
+        if (!_wordAudioExplained) {
+          _wordAudioExplained = true;
+          onAudioError?.call(
+            '词音频首次播放需要联网：仅将当前英语词发送到有道公开词音频服务，不上传笔记；成功缓存后可离线重播。',
+          );
+        }
+        await _wordAudio.play(word);
+        if (token != _speechGeneration) return;
+        audioError = null;
+        _reportedAudioError = null;
+        notifyListeners();
+        return;
+      } catch (error) {
+        dictionaryError = error;
       }
+    }
+    if (token != _speechGeneration) return;
+    try {
+      await _ensureTts();
+      if (token != _speechGeneration) return;
+      if (_nativeTts) {
+        await _nativeTtsChannel.invokeMethod<void>('speak', {
+          'text': word.trim(),
+        });
+      } else {
+        await _tts.stop();
+        if (await _tts.speak(word.trim()) != 1) {
+          if (!isAndroid) throw StateError('语音引擎拒绝朗读请求');
+          try {
+            await _nativeTtsChannel.invokeMethod<void>('initialize', {
+              'engine': selectedTtsEngine,
+            });
+            _nativeTts = true;
+            await _nativeTtsChannel.invokeMethod<void>('speak', {
+              'text': word.trim(),
+            });
+          } catch (error) {
+            throw StateError('语音引擎拒绝朗读请求；原生备用失败：$error');
+          }
+        }
+      }
+      audioError = null;
       _reportedAudioError = null;
+      notifyListeners();
     } catch (error) {
+      if (token != _speechGeneration) return;
       _ttsInitialization = null;
-      _audioError('朗读失败：$error。请检查系统文字转语音引擎、英语语音数据和媒体音量。');
+      _audioError(
+        '词音频不可用：$dictionaryError；系统备用朗读失败：$error。未缓存的词需要联网，请检查网络和媒体音量；也可从朗读设置安装系统英语语音。',
+      );
     }
   }
 
@@ -643,6 +828,7 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
   });
 
   Future<void> disposeService() async {
+    await stopSpeech();
     try {
       await _unregisterHotkey();
       if (isWindows && _trayInitialized) {
@@ -860,12 +1046,9 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
   }
 
   Future<void> _configureTts(AppSettings settings) async {
-    if (!settings.tts) return;
-    try {
-      await _ensureTts();
-    } catch (error) {
-      _audioError('朗读初始化失败：$error。请检查系统文字转语音引擎和英语语音数据。');
-    }
+    // Online/cache playback must not be delayed by unavailable system TTS.
+    // The engine is initialized only for explicit retry or dictionary failure.
+    if (!settings.tts) await stopSpeech();
   }
 
   String _platformNotificationPayload(String payload) {

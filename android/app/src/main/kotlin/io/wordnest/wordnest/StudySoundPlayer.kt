@@ -32,14 +32,18 @@ internal class StudySoundPlayer(context: Context) {
                 }
             }
         }
-        mapOf("key" to R.raw.study_key, "correct" to R.raw.study_correct,
-            "incorrect" to R.raw.study_incorrect).forEach { (name, resource) ->
+        mapOf("classic/key" to R.raw.study_key, "classic/correct" to R.raw.study_correct,
+            "classic/incorrect" to R.raw.study_incorrect,
+            "soft/key" to R.raw.study_soft_key, "soft/correct" to R.raw.study_soft_correct,
+            "soft/incorrect" to R.raw.study_soft_incorrect,
+            "digital/key" to R.raw.study_digital_key, "digital/correct" to R.raw.study_digital_correct,
+            "digital/incorrect" to R.raw.study_digital_incorrect).forEach { (name, resource) ->
             sounds[name] = pool.load(context, resource, 1)
         }
     }
 
-    fun play(name: String?, result: MethodChannel.Result) {
-        val id = sounds[name]
+    fun play(name: String?, pack: String, result: MethodChannel.Result) {
+        val id = sounds["$pack/$name"]
         if (released || id == null || id == 0 || failures.contains(id)) {
             result.error("sound_unavailable", "Offline sound unavailable", null)
         } else if (loaded.contains(id)) {

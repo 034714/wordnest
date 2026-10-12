@@ -11,8 +11,9 @@ import 'package:path_provider/path_provider.dart';
 
 import '../domain/models.dart';
 
-/// Live drag previews so opacity sliders feel instant instead of applying
-/// only after release (the value is still persisted on change-end).
+/// Paint-local drag previews; do not listen to these at the MaterialApp level.
+/// Keep the released value while persistence is pending, then clear only after
+/// stored settings have reached the surfaces (or roll back on failure).
 final ValueNotifier<double?> backgroundOpacityPreview = ValueNotifier(null);
 final ValueNotifier<double?> surfaceOpacityPreview = ValueNotifier(null);
 

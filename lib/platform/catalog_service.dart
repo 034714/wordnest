@@ -71,6 +71,7 @@ class CatalogService {
     PinnedFetch? transport,
     ProxyProbe? proxyProbe,
     ProxiedFetch? proxiedFetch,
+    HostnameFetch? hostnameFetch,
     this.timeout = const Duration(seconds: 20),
   }) : _resolver = resolver ?? InternetAddress.lookup,
        // ignore: prefer_initializing_formals
@@ -78,7 +79,9 @@ class CatalogService {
        // ignore: prefer_initializing_formals
        _proxyProbe = proxyProbe,
        // ignore: prefer_initializing_formals
-       _proxiedFetch = proxiedFetch;
+       _proxiedFetch = proxiedFetch,
+       // ignore: prefer_initializing_formals
+       _hostnameFetch = hostnameFetch;
 
   static const hardMaxBytes = 8 * 1024 * 1024;
   static const kylebingRevision = 'c4c6c80879ff17d7025c28fb853a4991c8e6be6a';
@@ -157,6 +160,7 @@ class CatalogService {
   final PinnedFetch? _transport;
   final ProxyProbe? _proxyProbe;
   final ProxiedFetch? _proxiedFetch;
+  final HostnameFetch? _hostnameFetch;
   final Duration timeout;
 
   Future<List<CatalogBook>> list() => _loading ??= _loadManifest();
@@ -180,6 +184,7 @@ class CatalogService {
         transport: _transport,
         proxyProbe: _proxyProbe,
         proxiedFetch: _proxiedFetch,
+        hostnameFetch: _hostnameFetch,
       );
       if (response.statusCode != HttpStatus.ok) {
         throw CatalogError('下载失败：服务器响应 ${response.statusCode}。');

@@ -4,6 +4,8 @@ import '../domain/controller.dart';
 import '../domain/models.dart';
 import '../platform/appearance_service.dart';
 import '../platform/desktop_service.dart';
+import '../platform/update_service.dart';
+import 'update_download_panel.dart';
 import 'library_page.dart';
 import 'shared_widgets.dart';
 
@@ -25,6 +27,7 @@ class SettingsPage extends StatefulWidget {
     this.onCheckUpdates,
     this.onConfigureUpdates,
     this.updateStatus = '尚未检查更新',
+    this.updates,
     this.onPickBackground,
     this.onDeleteBackground,
     this.onOpenNotebook,
@@ -41,6 +44,7 @@ class SettingsPage extends StatefulWidget {
   /// 「打开生词本」按钮会把词书页作为新路由推入，保证按钮始终可用。
   final Future<void> Function()? onOpenNotebook;
   final String updateStatus;
+  final UpdateService? updates;
   final bool native;
   final AppController controller;
   final Future<void> Function() onPlatformChanged;
@@ -461,11 +465,79 @@ class _SettingsPageState extends State<SettingsPage> {
               ),
               LabeledSwitch(
                 title: '英文朗读入口',
-                subtitle: '在学习页面提供英语发音按钮；是否播放由系统音频状态决定。',
+                subtitle: '优先词典词音频；首次需联网，缓存后可离线。系统朗读仅作备用。',
                 value: s.tts,
                 onChanged: (value) =>
                     _update((settings) => settings.tts = value, platform: true),
               ),
+              if (widget.native)
+                ListenableBuilder(
+                  listenable: widget.desktop,
+                  builder: (context, _) => Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (widget.desktop.isAndroid)
+                        _SettingRow(
+                          title: '系统朗读引擎',
+                          subtitle: '选择仅本次运行生效；安装/启用引擎后可刷新并重试。',
+                          trailing: Wrap(
+                            spacing: 8,
+                            children: [
+                              for (final engine in widget.desktop.ttsEngines)
+                                ChoiceChip(
+                                  label: Text(engine),
+                                  selected:
+                                      widget.desktop.selectedTtsEngine ==
+                                      engine,
+                                  onSelected: (_) =>
+                                      widget.desktop.retryTts(engine: engine),
+                                ),
+                              TextButton(
+                                onPressed: widget.desktop.refreshTtsEngines,
+                                child: const Text('刷新引擎'),
+                              ),
+                            ],
+                          ),
+                        ),
+                      Wrap(
+                        spacing: 8,
+                        children: [
+                          OutlinedButton(
+                            onPressed: () => widget.desktop.retryTts(),
+                            child: const Text('重试系统备用朗读'),
+                          ),
+                          OutlinedButton(
+                            onPressed: s.tts
+                                ? () => widget.desktop.speak('hello')
+                                : null,
+                            child: const Text('试听词音频'),
+                          ),
+                          TextButton(
+                            onPressed: () => widget.desktop.openTtsSettings(),
+                            child: const Text('打开系统语音设置'),
+                          ),
+                          if (widget.desktop.isAndroid)
+                            TextButton(
+                              onPressed: () => widget.desktop.openTtsSettings(
+                                installData: true,
+                              ),
+                              child: const Text('安装系统语音数据'),
+                            ),
+                        ],
+                      ),
+                      Text(
+                        widget.desktop.audioError ??
+                            '有道公开 HTTPS 词音频优先，不依赖系统 TTS；未缓存的词需联网，服务不可用时尝试系统备用。',
+                      ),
+                      const Text(
+                        '在线仅发送当前单个英语词，不发送释义或个人笔记。成功下载的 MP3 存在应用本地，清除应用数据会移除缓存。',
+                      ),
+                      const Text(
+                        '备用指导：Android 系统文字转语音设置中选择引擎并安装英语语音数据；Windows 设置 → 时间和语言 → 语音 → 管理声音 → 添加英语语音。安装后返回重试。系统引擎是否联网由其自身设置决定。',
+                      ),
+                    ],
+                  ),
+                ),
               LabeledSwitch(
                 title: '输入提示',
                 subtitle: '输入题中允许逐步显示首字母提示。',
@@ -477,8 +549,46 @@ class _SettingsPageState extends State<SettingsPage> {
                 title: '键盘与提示音效',
                 subtitle: '键盘输入点击声与答对提示音；不影响系统通知。',
                 value: s.sound,
-                onChanged: (value) =>
-                    _update((settings) => settings.sound = value),
+                onChanged: (value) => _update(
+                  (settings) => settings.sound = value,
+                  platform: true,
+                ),
+              ),
+              _SettingRow(
+                title: '音效套装',
+                subtitle: 'Android：三套离线声音，一键切换；试听不改变开关。Windows 暂用系统提示音。',
+                trailing: Wrap(
+                  spacing: 6,
+                  runSpacing: 6,
+                  children: [
+                    for (final pack in AppSettings.soundPackLabels.entries)
+                      ChoiceChip(
+                        label: Text(pack.value),
+                        selected: s.soundPack == pack.key,
+                        onSelected: c.saving
+                            ? null
+                            : (_) => _update(
+                                (settings) => settings.soundPack = pack.key,
+                                platform: true,
+                              ),
+                      ),
+                    for (final sound in const {
+                      'key': '试听键盘',
+                      'correct': '试听答对',
+                      'incorrect': '试听答错',
+                    }.entries)
+                      TextButton(
+                        onPressed: widget.native
+                            ? () => widget.desktop.playStudySound(
+                                sound.key,
+                                pack: s.soundPack,
+                                preview: true,
+                              )
+                            : null,
+                        child: Text(sound.value),
+                      ),
+                  ],
+                ),
               ),
             ],
           ),
@@ -908,7 +1018,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 onPressed: () => showLicensePage(
                   context: context,
                   applicationName: '词栖',
-                  applicationVersion: '0.3.1',
+                  applicationVersion: '0.3.3',
                   applicationLegalese: '本地优先的轻量记词工具',
                 ),
                 icon: const Icon(Icons.menu_book_outlined),
@@ -932,8 +1042,10 @@ class _SettingsPageState extends State<SettingsPage> {
                   ],
                 ),
               ),
+              if (widget.native && widget.updates != null)
+                UpdateDownloadPanel(updates: widget.updates!),
               const SizedBox(height: 10),
-              Text('词栖 · 0.3.1', style: theme.textTheme.titleSmall),
+              Text('词栖 · 0.3.3', style: theme.textTheme.titleSmall),
             ],
           ),
           const SizedBox(height: 8),
@@ -1277,7 +1389,7 @@ class _OpacitySlider extends StatefulWidget {
 
   final double value, min;
   final bool enabled;
-  final ValueChanged<double> onChangeEnd;
+  final Future<void> Function(double) onChangeEnd;
   final ValueChanged<double?>? onPreview;
 
   @override
@@ -1286,11 +1398,64 @@ class _OpacitySlider extends StatefulWidget {
 
 class _OpacitySliderState extends State<_OpacitySlider> {
   double? _draft;
+  bool _dragging = false;
+  bool _committing = false;
 
   @override
   void didUpdateWidget(covariant _OpacitySlider oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.value != widget.value || !widget.enabled) _draft = null;
+    if (!_dragging && !_committing) _draft = null;
+  }
+
+  Future<void> _commit(double next) async {
+    if (_committing) return;
+    final preview = widget.onPreview;
+    final messenger = ScaffoldMessenger.of(context);
+    final controller = context
+        .findAncestorWidgetOfExactType<SettingsPage>()!
+        .controller;
+    final background = widget.key == const ValueKey('background-opacity');
+    setState(() {
+      _dragging = false;
+      _committing = true;
+      _draft = next;
+    });
+    preview?.call(next);
+    var saved = false;
+    try {
+      await widget.onChangeEnd(next);
+      // The parent callback returns void even on a rejected save. Wait for
+      // its stored value to reach this widget before retiring the preview.
+      await WidgetsBinding.instance.endOfFrame;
+      final stored = background
+          ? controller.settings.backgroundOpacity
+          : controller.settings.surfaceOpacity;
+      saved = controller.error == null && (stored - next).abs() < .000001;
+    } catch (_) {
+      saved = false;
+    } finally {
+      preview?.call(null);
+      if (mounted) {
+        setState(() {
+          _committing = false;
+          _draft = null;
+        });
+      }
+      if (!saved && messenger.mounted) {
+        messenger.showSnackBar(const SnackBar(content: Text('不透明度未保存，已恢复原值。')));
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    // A pending commit owns the preview until it finishes, even after leaving
+    // settings. An interrupted gesture has nothing to persist.
+    if (!_committing && _draft != null) {
+      final preview = widget.onPreview;
+      WidgetsBinding.instance.addPostFrameCallback((_) => preview?.call(null));
+    }
+    super.dispose();
   }
 
   @override
@@ -1307,18 +1472,17 @@ class _OpacitySliderState extends State<_OpacitySlider> {
               max: 1,
               divisions: ((1 - widget.min) * 100).round(),
               label: '${(value * 100).round()}%',
-              onChanged: widget.enabled
+              onChangeStart: widget.enabled && !_committing
+                  ? (_) => _dragging = true
+                  : null,
+              onChanged: (widget.enabled || _dragging) && !_committing
                   ? (next) {
                       widget.onPreview?.call(next);
                       setState(() => _draft = next);
                     }
                   : null,
-              onChangeEnd: widget.enabled
-                  ? (next) {
-                      widget.onPreview?.call(null);
-                      setState(() => _draft = null);
-                      widget.onChangeEnd(next);
-                    }
+              onChangeEnd: (widget.enabled || _dragging) && !_committing
+                  ? _commit
                   : null,
             ),
           ),

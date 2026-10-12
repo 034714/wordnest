@@ -1,15 +1,19 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 /// Shared hardened HTTP primitives for update and catalog downloads.
 ///
 /// Rules: http/https only with public DNS answers connected by numeric address
 /// (no second resolution, no DNS rebinding); HTTPS keeps the original URI host
-/// for certificate/SNI. Only exact trusted GitHub hosts may use a system proxy
-/// when DNS fails or every answer is in the IPv4 benchmark fake-ip range. Other
-/// non-public or mixed answers are rejected even with a proxy configured. The
-/// proxy resolves trusted targets itself; every redirect repeats URL and DNS
-/// validation. Strict body and time bounds; no installer downloads/execution.
+/// for certificate/SNI. Only exact trusted GitHub/audio hosts may use a system
+/// proxy when DNS fails or every answer is IPv4 benchmark fake-IP. All-fake-IP
+/// on those hosts also permits an original-hostname platform connection for
+/// VPN routing without an HTTP proxy. This local-client fixed-source exception
+/// is not a general private-DNS or server-side SSRF bypass. Other non-public or
+/// mixed answers always fail. Every redirect repeats URL/DNS validation.
+/// Strict TLS/body/time bounds; execution is not part of transport.
 typedef AddressResolver = Future<List<InternetAddress>> Function(String host);
 
 typedef PinnedFetch = Future<FetchResponse> Function(
@@ -23,16 +27,21 @@ typedef ProxyProbe = Future<String?> Function(Uri uri);
 /// Performs a request through the given proxy endpoint without pinning.
 typedef ProxiedFetch = Future<FetchResponse> Function(Uri uri, String proxy);
 
+/// Platform hostname connection for an authorized VPN fake-IP destination.
+typedef HostnameFetch = Future<FetchResponse> Function(Uri uri);
+
 const Set<int> redirectStatusCodes = {301, 302, 303, 307, 308};
 
-// Only these exact public source hosts may delegate destination DNS to a proxy.
-// User-supplied update hosts and subdomains do not inherit this exception.
+// Only these exact fixed-source hosts may delegate destination DNS to a proxy
+// or, for all-benchmark fake-IP, the VPN/platform hostname connection.
+// User-supplied other update hosts and subdomains inherit no exception.
 const Set<String> _trustedProxyHosts = {
   'raw.githubusercontent.com',
   'github.com',
   'release-assets.githubusercontent.com',
   'objects.githubusercontent.com',
   'api.github.com',
+  'dict.youdao.com',
 };
 
 class FetchResponse {
@@ -193,6 +202,10 @@ String? proxyServerFromRegistry(String value) {
 /// all on Windows, falls back to the per-user Internet Settings registry value
 /// that the OS "system proxy" toggle writes. `DIRECT` means no proxy.
 Future<String?> defaultSystemProxy(Uri uri) async {
+  if (Platform.isAndroid) {
+    return const MethodChannel('io.wordnest/updater')
+        .invokeMethod<String>('systemProxy', {'url': uri.toString()});
+  }
   final fromEnvironment = firstProxyDirective(
     HttpClient.findProxyFromEnvironment(uri),
   );
@@ -325,6 +338,7 @@ Future<FetchResponse> fetchPinned(
   InternetAddress address, {
   required Duration timeout,
   required int maxBodyBytes,
+  Future<FetchResponse> Function(HttpClient, Uri)? exchange,
 }) async {
   final client = HttpClient()
     ..findProxy = ((_) => 'DIRECT')
@@ -370,7 +384,10 @@ Future<FetchResponse> fetchPinned(
     });
   };
   try {
-    return await _exchange(client, uri, maxBodyBytes).timeout(timeout);
+    return await (exchange ?? (c, u) => _exchange(c, u, maxBodyBytes))(
+      client,
+      uri,
+    ).timeout(timeout);
   } finally {
     watchdog.cancel();
     active = false;
@@ -390,14 +407,36 @@ Future<FetchResponse> fetchViaProxy(
   required String proxy,
   required Duration timeout,
   required int maxBodyBytes,
+  Future<FetchResponse> Function(HttpClient, Uri)? exchange,
+}) => _fetchHostname(
+  uri,
+  proxy: proxy,
+  timeout: timeout,
+  maxBodyBytes: maxBodyBytes,
+  exchange: exchange,
+);
+
+// Only safeHttpGet's exact trusted-host/all-fake-IP branch may call this
+// without a proxy. Android VPNs route the original hostname via the platform
+// network stack even when ProxySelector reports DIRECT. No custom socket
+// factory or certificate override: platform TLS verifies the original host.
+Future<FetchResponse> _fetchHostname(
+  Uri uri, {
+  String? proxy,
+  required Duration timeout,
+  required int maxBodyBytes,
+  Future<FetchResponse> Function(HttpClient, Uri)? exchange,
 }) async {
   final client = HttpClient()
     ..connectionTimeout = timeout
     ..autoUncompress = false
-    ..findProxy = ((_) => 'PROXY $proxy');
+    ..findProxy = ((_) => proxy == null ? 'DIRECT' : 'PROXY $proxy');
   final watchdog = Timer(timeout, () => client.close(force: true));
   try {
-    return await _exchange(client, uri, maxBodyBytes).timeout(timeout);
+    return await (exchange ?? (c, u) => _exchange(c, u, maxBodyBytes))(
+      client,
+      uri,
+    ).timeout(timeout);
   } finally {
     watchdog.cancel();
     client.close(force: true);
@@ -408,8 +447,9 @@ Future<FetchResponse> fetchViaProxy(
 /// a bounded body and a single overall deadline. HTTPS may not be downgraded.
 /// Proxy fallback is limited to [_trustedProxyHosts] after DNS failure/empty
 /// answers or all-benchmark IPv4 fake-ip answers. Every other non-public or
-/// mixed answer fails before proxy lookup. Trusted fake-ip without a system
-/// proxy reports explicit guidance instead of connecting to the virtual IP.
+/// mixed answer fails before proxy lookup. Trusted all-fake-IP without an HTTP
+/// proxy uses the original hostname/platform connection (VPN-controlled DNS).
+/// Failed/empty DNS without a proxy still fails closed.
 Future<FetchResponse> safeHttpGet({
   required Uri uri,
   required AddressResolver resolver,
@@ -418,7 +458,10 @@ Future<FetchResponse> safeHttpGet({
   PinnedFetch? transport,
   ProxyProbe? proxyProbe,
   ProxiedFetch? proxiedFetch,
+  HostnameFetch? hostnameFetch,
   int maxRedirects = 3,
+  Future<FetchResponse> Function(HttpClient, Uri)? exchange,
+  void Function(Uri)? validateHop,
 }) async {
   final deadline = DateTime.now().add(timeout);
   Duration remaining() {
@@ -431,6 +474,7 @@ Future<FetchResponse> safeHttpGet({
 
   var current = validatePublicHttpUrl(uri.toString());
   for (var hop = 0; hop <= maxRedirects; hop++) {
+    validateHop?.call(current);
     List<InternetAddress> answers = const [];
     Object? resolveError;
     StackTrace? resolveStack;
@@ -448,13 +492,30 @@ Future<FetchResponse> safeHttpGet({
 
     FetchResponse fetched;
     if (allPublic) {
-      fetched = transport != null
+      // An injected pinned transport must not unexpectedly access real host
+      // proxy configuration in tests. An explicit probe still selects routing.
+      final probe =
+          proxyProbe ??
+          (transport != null ? (_) async => null : defaultSystemProxy);
+      final proxy = await probe(current).timeout(remaining());
+      fetched = proxy != null
+          ? (proxiedFetch != null
+                ? await proxiedFetch(current, proxy).timeout(remaining())
+                : await fetchViaProxy(
+                    current,
+                    proxy: proxy,
+                    timeout: remaining(),
+                    maxBodyBytes: maxBodyBytes,
+                    exchange: exchange,
+                  ))
+          : transport != null
           ? await transport(current, answers.first).timeout(remaining())
           : await fetchPinned(
               current,
               answers.first,
               timeout: remaining(),
               maxBodyBytes: maxBodyBytes,
+              exchange: exchange,
             );
     } else {
       final host = current.host.toLowerCase().replaceFirst(RegExp(r'\.$'), '');
@@ -466,22 +527,29 @@ Future<FetchResponse> safeHttpGet({
       }
       final proxy = await (proxyProbe ?? defaultSystemProxy)(current)
           .timeout(remaining());
-      if (proxy == null) {
-        if (allFakeIp) {
-          throw const FakeIpDnsException();
-        }
+      if (proxy == null && !allFakeIp) {
         if (resolveError != null) {
           Error.throwWithStackTrace(resolveError, resolveStack!);
         }
         throw const FormatException('域名没有可用地址');
       }
-      fetched = proxiedFetch != null
+      fetched = proxy == null
+          ? hostnameFetch != null
+                ? await hostnameFetch(current).timeout(remaining())
+                : await _fetchHostname(
+                    current,
+                    timeout: remaining(),
+                    maxBodyBytes: maxBodyBytes,
+                    exchange: exchange,
+                  )
+          : proxiedFetch != null
           ? await proxiedFetch(current, proxy).timeout(remaining())
           : await fetchViaProxy(
               current,
               proxy: proxy,
               timeout: remaining(),
               maxBodyBytes: maxBodyBytes,
+              exchange: exchange,
             );
     }
 

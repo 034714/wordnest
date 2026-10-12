@@ -122,7 +122,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       await desktop.configure(c.settings);
       await updates.initialize();
       updates.startAutoChecks(
-        currentVersion: '0.3.1+4',
+        currentVersion: '0.3.3+6',
         platform: desktop.isAndroid ? 'android' : 'windows',
       );
       if (!mounted) return;
@@ -291,7 +291,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   Future<void> _checkUpdates() async {
     final result = await updates.check(
-      currentVersion: '0.3.1+4',
+      currentVersion: '0.3.3+6',
       platform: desktop.isAndroid ? 'android' : 'windows',
     );
     if (mounted) _message(result.message);
@@ -458,8 +458,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       extensions: [
         AppearanceTheme(
           materialMode: c.settings.materialMode,
-          surfaceOpacity:
-              surfaceOpacityPreview.value ?? c.settings.surfaceOpacity,
+          surfaceOpacity: c.settings.surfaceOpacity,
         ),
       ],
       scaffoldBackgroundColor: dark
@@ -521,13 +520,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([
-      c,
-      desktop,
-      updates,
-      backgroundOpacityPreview,
-      surfaceOpacityPreview,
-    ]),
+    listenable: Listenable.merge([c, desktop, updates]),
     builder: (context, _) => MaterialApp(
       navigatorKey: navigatorKey,
       scaffoldMessengerKey: messengerKey,
@@ -538,6 +531,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       localizationsDelegates: GlobalMaterialLocalizations.delegates,
       theme: _theme(Brightness.light),
       darkTheme: _theme(Brightness.dark),
+      themeAnimationDuration: Duration.zero,
       themeMode: switch (c.settings.theme) {
         'dark' => ThemeMode.dark,
         'system' => ThemeMode.system,
@@ -559,17 +553,22 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
                       : Stack(
                           fit: StackFit.expand,
                           children: [
-                            Image.memory(
-                              _backgroundBytes!,
-                              key: ValueKey(_backgroundAsset),
-                              fit: BoxFit.cover,
-                              opacity: AlwaysStoppedAnimation(
-                                backgroundOpacityPreview.value ??
-                                    c.settings.backgroundOpacity,
+                            ValueListenableBuilder<double?>(
+                              valueListenable: backgroundOpacityPreview,
+                              child: Image.memory(
+                                _backgroundBytes!,
+                                key: ValueKey(_backgroundAsset),
+                                fit: BoxFit.cover,
+                                excludeFromSemantics: true,
+                                errorBuilder: (_, _, _) =>
+                                    const SizedBox.expand(),
                               ),
-                              excludeFromSemantics: true,
-                              errorBuilder: (_, _, _) =>
-                                  const SizedBox.expand(),
+                              builder: (context, preview, image) => Opacity(
+                                key: const ValueKey('background-image-opacity'),
+                                opacity:
+                                    preview ?? c.settings.backgroundOpacity,
+                                child: image,
+                              ),
                             ),
                             ColoredBox(
                               color: Theme.of(context).scaffoldBackgroundColor
@@ -636,6 +635,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
                 if (saved && mounted) setState(() => page = 2);
               },
               onCalendar: _calendar,
+              updates: updates,
               onCheckUpdates: _checkUpdates,
               onConfigureUpdates: _configureUpdates,
               onPickBackground: _appearance.enabled
@@ -790,9 +790,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
   }
 
   Widget _bottomNavigation(BuildContext context, {required bool floating}) {
-    final appearance = Theme.of(context).extension<AppearanceTheme>()!;
-    final surfaced =
-        floating || appearance.glass || appearance.surfaceOpacity < 1;
+    // Always wrap navigation so previews at 100% use the same surface tree.
     final navigation = Theme(
       data: Theme.of(context).copyWith(
         splashFactory: NoSplash.splashFactory,
@@ -808,8 +806,8 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       ),
       child: NavigationBar(
         key: ValueKey(floating ? 'floating-navigation' : 'adaptive-navigation'),
-        backgroundColor: surfaced ? Colors.transparent : null,
-        elevation: surfaced ? 0 : null,
+        backgroundColor: Colors.transparent,
+        elevation: 0,
         height: floating ? 72 : null,
         // Both layouts use icon/label feedback, never a Material state layer.
         indicatorColor: Colors.transparent,
@@ -844,7 +842,6 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
         ],
       ),
     );
-    if (!surfaced) return navigation;
     final surface = SurfaceMaterial(
       color: Theme.of(context).colorScheme.surfaceContainer,
       borderRadius: floating
