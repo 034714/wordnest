@@ -1,0 +1,71 @@
+name: Release Build
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    env:
+      WORDNEST_KEYSTORE_PATH: ${{ github.workspace }}\cjx.jks
+      WORDNEST_STORE_PASSWORD: ${{ secrets.WORDNEST_STORE_PASSWORD }}
+      WORDNEST_KEY_ALIAS: ${{ secrets.WORDNEST_KEY_ALIAS }}
+      WORDNEST_KEY_PASSWORD: ${{ secrets.WORDNEST_KEY_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.1'
+          channel: stable
+          cache: true
+
+      - name: Install pefile (cross-platform PE version reader)
+        run: pip install pefile
+
+      - name: Install Inno Setup 6
+        run: choco install innosetup -y
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Build Android APK (arm64-v8a, release-signed)
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Package release (installer + portable + APK)
+        run: python packaging/windows/package.py --public --output-dir dist
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/WordNest-windows-x64-setup.exe
+            dist/WordNest-windows-x64-portable.zip
+            dist/WordNest-android.apk
+          body: |
+            ## WordNest ${{ github.ref_name }}
+
+            - **Android** — arm64-v8a APK (release-signed)
+            - **Windows** — x64 installer + portable ZIP
+
+            安装前请先阅读包内 USAGE.txt。
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

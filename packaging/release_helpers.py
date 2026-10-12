@@ -193,12 +193,41 @@ def parse_apk_version(badging: str, expected: ReleaseVersion) -> dict:
 
 
 def windows_file_version(executable: Path) -> tuple[int, int, int, int]:
-    """Read the numeric PE VERSIONINFO using Windows APIs, without executing it."""
-    if os.name != 'nt':
-        raise ValueError('Windows PE version validation requires Windows.')
+    """Read the numeric PE VERSIONINFO. On Windows uses version.dll; on other
+    platforms falls back to the `pefile` parser. Install pefile
+    (`pip install pefile`) to run this step on Linux/macOS."""
     with executable.open('rb') as stream:
         if stream.read(2) != b'MZ':
             raise ValueError('Windows runner is not a PE executable.')
+    if os.name == 'nt':
+        return _windows_file_version_native(executable)
+    try:
+        import pefile  # type: ignore
+    except ImportError as error:
+        raise ValueError(
+            'Windows PE version validation on non-Windows requires pefile; '
+            'install it with `pip install pefile` or run the record step on Windows.'
+        ) from error
+    pe = pefile.PE(str(executable), fast_load=True)
+    try:
+        if not hasattr(pe, 'VS_VERSIONINFO') or pe.VS_VERSIONINFO is None:
+            raise ValueError('Windows runner has no VS_VERSIONINFO resource.')
+        for info in pe.VS_VERSIONINFO:
+            if not hasattr(info, 'FileVersionMS'):
+                continue
+            ms, ls = info.FileVersionMS, info.FileVersionLS
+            version = (ms >> 16, ms & 0xffff, ls >> 16, ls & 0xffff)
+            pms, pls = info.ProductVersionMS, info.ProductVersionLS
+            product = (pms >> 16, pms & 0xffff, pls >> 16, pls & 0xffff)
+            if version != product:
+                raise ValueError('Windows file and product versions disagree.')
+            return version
+        raise ValueError('Windows runner has no fixed file version metadata.')
+    finally:
+        pe.close()
+
+
+def _windows_file_version_native(executable: Path) -> tuple[int, int, int, int]:
     from ctypes import wintypes
     dll = ctypes.WinDLL('version.dll', use_last_error=True)
     dll.GetFileVersionInfoSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
