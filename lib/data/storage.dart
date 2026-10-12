@@ -520,7 +520,8 @@ class BackupCodec {
       final value = _expectInt(settings, field, 'settings');
       final valid = switch (field) {
         'roundSize' => value >= 1 && value <= 50,
-        'dailyNew' => value >= 1 && value <= 100,
+        // Daily plan target, not a quota. Keep JSON integers exact on web too.
+        'dailyNew' => value >= 1 && value <= 9007199254740991,
         'dailyLimit' => value >= 1 && value <= 500,
         'optionCount' => value >= 2 && value <= 4,
         'reminderMinutes' => value >= 1 && value <= 240,
@@ -809,7 +810,9 @@ class BackupCodec {
     }
     final bookIds = <String>{};
     for (final book in snapshot.books) {
-      if (book.id.trim().isEmpty || !bookIds.add(book.id)) {
+      if (book.id == notebookBookId ||
+          book.id.trim().isEmpty ||
+          !bookIds.add(book.id)) {
         throw const FormatException('备份内容错误：词书ID重复或为空');
       }
       final positions = <int>{};
@@ -858,6 +861,7 @@ class BackupCodec {
     }
     _validateRawNotebook(snapshot.notebook.toList(), entryIds);
     _validateRawNotebookProgress(snapshot.notebookProgress, entryIds);
+    bookIds.add(notebookBookId);
     final active = snapshot.settings.activeBookId;
     if (active.isNotEmpty && !bookIds.contains(active)) {
       throw FormatException('备份内容错误：当前词书不存在（$active）');
@@ -1080,14 +1084,9 @@ class MemoryStorage implements AppStorage {
   Future<void> deleteBook(String id) async {
     _ensureOpen();
     final next = _snapshot.clone();
+    if (id == notebookBookId) throw const FormatException('生词本不可删除');
     next.books.removeWhere((b) => b.id == id);
-    final referenced = next.books.expand((b) => b.uniqueIds).toSet();
-    next.entries.removeWhere((key, _) => !referenced.contains(key));
-    next.cards.removeWhere((key, _) => !referenced.contains(key));
-    next.notes.removeWhere((key, _) => !referenced.contains(key));
-    next.notebook.removeWhere((id) => !referenced.contains(id));
-    next.notebookProgress.removeWhere((key, _) => !referenced.contains(key));
-    next.events.removeWhere((event) => !referenced.contains(event.entryId));
+    // Deleting the last reference never destroys global learning data.
     if (next.settings.activeBookId == id) {
       next.settings.activeBookId = next.books.firstOrNull?.id ?? '';
     }
@@ -1526,7 +1525,7 @@ class SqliteStorage implements AppStorage {
     final books = (await db.query(
       'books',
       columns: ['id'],
-    )).map((row) => row['id']! as String).toSet();
+    )).map((row) => row['id']! as String).toSet()..add(notebookBookId);
     for (final entry in sessions.entries) {
       if (!BackupCodec.modes.contains(entry.key) ||
           entry.value['mode'] != entry.key) {

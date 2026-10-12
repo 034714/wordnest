@@ -29,6 +29,19 @@ class _LibraryPageState extends State<LibraryPage> {
   bool _busy = false;
   int _visibleWordCount = 60;
   bool _onlyNotebook = false;
+  bool _allWords = false;
+
+  Future<void> _nameBook([WordBook? book]) async {
+    final name = await showBookNameDialog(context, title: book?.title);
+    if (name == null) return;
+    final ok = book == null
+        ? await c.createBook(name)
+        : await c.renameBook(book.id, name);
+    if (mounted) {
+      if (ok) setState(() => _allWords = false);
+      _message(ok ? '词书已保存。' : c.error ?? '保存失败');
+    }
+  }
 
   /// 'book' | 'alpha' | 'noted'; noted puts words with a personal note first.
   String _sortOrder = 'book';
@@ -509,7 +522,9 @@ class _LibraryPageState extends State<LibraryPage> {
       context: context,
       builder: (dialogContext) => AlertDialog(
         title: Text('删除「${book.title}」？'),
-        content: const Text('这会删除词书关联的学习进度和笔记。若你还需要它们，请先导出备份。'),
+        content: const Text(
+          '只删除词书与成员关系，不删除全局词条、笔记或学习记录。失去最后一个词书引用的词条仍可从“全部单词”重新分组；这本词书的未完成学习轮次会被清除。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -721,8 +736,8 @@ class _LibraryPageState extends State<LibraryPage> {
 
   @override
   Widget build(BuildContext context) {
-    final books = c.state.books;
-    final words = c.words.where((entry) {
+    final books = c.libraryBooks;
+    final words = (_allWords ? c.state.entries.values : c.words).where((entry) {
       final q = _query.trim().toLowerCase();
       final match =
           q.isEmpty ||
@@ -730,24 +745,7 @@ class _LibraryPageState extends State<LibraryPage> {
           entry.meaning.toLowerCase().contains(q);
       return match && (!_onlyNotebook || c.isNotebook(entry.id));
     }).toList();
-    final sorted = [...words];
-    switch (_sortOrder) {
-      case 'alpha':
-        sorted.sort(
-          (a, b) => a.word.toLowerCase().compareTo(b.word.toLowerCase()),
-        );
-      case 'noted':
-        sorted.sort((a, b) {
-          final an =
-              c.isNotebook(a.id) ||
-              c.state.notes[a.id]?.trim().isNotEmpty == true;
-          final bn =
-              c.isNotebook(b.id) ||
-              c.state.notes[b.id]?.trim().isNotEmpty == true;
-          if (an != bn) return an ? -1 : 1;
-          return 0;
-        });
-    }
+    final sorted = c.sortLibraryWords(words, _sortOrder);
     final visibleWords = sorted.take(_visibleWordCount).toList();
 
     return ContentShell(
@@ -757,10 +755,21 @@ class _LibraryPageState extends State<LibraryPage> {
           PageHeading(
             title: '我的词书',
             subtitle: '把正在学习的内容放在手边，顺序、笔记和进度都会留在本地。',
-            trailing: FilledButton.icon(
-              onPressed: _busy ? null : _pickAndPreview,
-              icon: const Icon(Icons.add_rounded),
-              label: const Text('导入词书'),
+            trailing: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: c.saving ? null : () => _nameBook(),
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                  label: const Text('创建词书'),
+                ),
+                FilledButton.icon(
+                  onPressed: _busy ? null : _pickAndPreview,
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('导入词书'),
+                ),
+              ],
             ),
           ),
           const SizedBox(height: 25),
@@ -800,6 +809,7 @@ class _LibraryPageState extends State<LibraryPage> {
                         (settings) => settings.activeBookId = books[index].id,
                       );
                     },
+                    onRename: () => _nameBook(books[index]),
                     onDelete: () => _deleteBook(books[index]),
                     onExport: () => _exportBookCsv(books[index]),
                   ),
@@ -844,13 +854,15 @@ class _LibraryPageState extends State<LibraryPage> {
               ),
             ),
             const SizedBox(height: 30),
-            if (c.book != null) ...[
+            if (c.book != null || c.state.entries.isNotEmpty) ...[
               LayoutBuilder(
                 builder: (context, constraints) {
                   final compact = constraints.maxWidth < 620;
                   final heading = SectionTitle(
                     title: '词条浏览',
-                    subtitle: '${c.book!.title} · ${c.words.length} 个词条',
+                    subtitle: _allWords
+                        ? '全部 ${c.state.entries.length} 个全局词条'
+                        : '${c.book?.title ?? '未选择词书'} · ${c.words.length} 个词条',
                     icon: Icons.search_rounded,
                   );
                   final search = TextField(
@@ -896,6 +908,14 @@ class _LibraryPageState extends State<LibraryPage> {
                     Text(
                       '显示 ${visibleWords.length} / ${words.length} 个词条',
                       style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    FilterChip(
+                      label: const Text('全部单词'),
+                      selected: _allWords,
+                      onSelected: (value) => setState(() {
+                        _allWords = value;
+                        _visibleWordCount = 60;
+                      }),
                     ),
                     ChoiceChip(
                       label: Text('只看生词本（${c.state.notebook.length}）'),
@@ -1215,13 +1235,14 @@ class _BookCard extends StatelessWidget {
     required this.controller,
     required this.onSelect,
     required this.onDelete,
+    required this.onRename,
     required this.onExport,
   });
   final WordBook book;
   final bool active;
   final AppController controller;
   final Future<void> Function() onSelect;
-  final VoidCallback onDelete;
+  final VoidCallback onDelete, onRename;
   final Future<void> Function() onExport;
 
   @override
@@ -1262,11 +1283,19 @@ class _BookCard extends StatelessWidget {
                     onDelete();
                   } else if (value == 'export') {
                     onExport();
+                  } else if (value == 'rename') {
+                    onRename();
                   }
                 },
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'export', child: Text('导出这本词书 CSV')),
-                  PopupMenuItem(value: 'delete', child: Text('删除词书')),
+                itemBuilder: (_) => [
+                  const PopupMenuItem(
+                    value: 'export',
+                    child: Text('导出这本词书 CSV'),
+                  ),
+                  if (book.id != notebookBookId) ...[
+                    const PopupMenuItem(value: 'rename', child: Text('重命名词书')),
+                    const PopupMenuItem(value: 'delete', child: Text('删除词书')),
+                  ],
                 ],
               ),
             ],

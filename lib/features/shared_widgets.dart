@@ -495,6 +495,202 @@ class LabeledSwitch extends StatelessWidget {
   }
 }
 
+Future<String?> showBookNameDialog(
+  BuildContext context, {
+  String? title,
+}) async {
+  final input = TextEditingController(text: title ?? '');
+  final form = GlobalKey<FormState>();
+  final name = await showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title == null ? '创建词书' : '重命名词书'),
+      content: Form(
+        key: form,
+        child: TextFormField(
+          controller: input,
+          autofocus: true,
+          maxLength: 100,
+          decoration: const InputDecoration(labelText: '词书名称（也是分组名称）'),
+          validator: (value) =>
+              value == null || value.trim().isEmpty ? '请输入名称' : null,
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () {
+            if (form.currentState!.validate()) {
+              Navigator.pop(context, input.text.trim());
+            }
+          },
+          child: const Text('确定'),
+        ),
+      ],
+    ),
+  );
+  // Let the closing route finish before disposing the text field controller.
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  input.dispose();
+  return name;
+}
+
+Future<void> showWordGroups(
+  BuildContext context,
+  AppController c,
+  WordEntry entry,
+) async {
+  final selected = c.groupsFor(entry.id).map((b) => b.id).toSet();
+  String? target;
+  String? source = selected.contains(c.book?.id)
+      ? c.book?.id
+      : selected.firstOrNull;
+  bool busy = false;
+  String? error;
+  await showDialog<void>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, update) => AlertDialog(
+        title: Text('编辑分组 · ${entry.word}'),
+        content: SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('词书就是分组。复制和移动共享笔记与学习进度，不会重置词条。'),
+                for (final b in c.libraryBooks)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(b.title),
+                    value: selected.contains(b.id),
+                    onChanged: busy
+                        ? null
+                        : (value) => update(() {
+                            value == true
+                                ? selected.add(b.id)
+                                : selected.remove(b.id);
+                          }),
+                  ),
+                TextButton.icon(
+                  onPressed: busy
+                      ? null
+                      : () async {
+                          final name = await showBookNameDialog(context);
+                          if (name == null) return;
+                          final ok = await c.createBook(name);
+                          if (context.mounted) {
+                            update(() {
+                              error = ok ? null : c.error;
+                            });
+                          }
+                        },
+                  icon: const Icon(Icons.add),
+                  label: const Text('创建词书'),
+                ),
+                const Text('也可以直接复制或移动到指定词书：'),
+                DropdownButtonFormField<String>(
+                  initialValue: target,
+                  decoration: const InputDecoration(labelText: '目标词书'),
+                  items: [
+                    for (final b in c.libraryBooks)
+                      DropdownMenuItem(value: b.id, child: Text(b.title)),
+                  ],
+                  onChanged: busy ? null : (id) => update(() => target = id),
+                ),
+                DropdownButtonFormField<String>(
+                  initialValue: source,
+                  decoration: const InputDecoration(
+                    labelText: '移动来源（仅移除此词书关系）',
+                  ),
+                  items: [
+                    for (final b in c.groupsFor(entry.id))
+                      DropdownMenuItem(value: b.id, child: Text(b.title)),
+                  ],
+                  onChanged: busy ? null : (id) => update(() => source = id),
+                ),
+                if (selected.isEmpty)
+                  const Text('不选分组会保留全局词条、笔记和记录，可从“全部单词”重新分组。'),
+                if (error != null)
+                  Text(
+                    error!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: busy ? null : () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: busy || target == null
+                ? null
+                : () async {
+                    update(() => busy = true);
+                    final ok = await c.copyWord(entry.id, target!);
+                    if (!context.mounted) return;
+                    if (ok) {
+                      Navigator.pop(dialogContext);
+                    } else {
+                      update(() {
+                        busy = false;
+                        error = c.error;
+                      });
+                    }
+                  },
+            child: const Text('复制到词书'),
+          ),
+          TextButton(
+            onPressed: busy || target == null || source == null
+                ? null
+                : () async {
+                    update(() => busy = true);
+                    final ok = await c.moveWord(entry.id, source!, target!);
+                    if (!context.mounted) return;
+                    if (ok) {
+                      Navigator.pop(dialogContext);
+                    } else {
+                      update(() {
+                        busy = false;
+                        error = c.error;
+                      });
+                    }
+                  },
+            child: const Text('移动到词书'),
+          ),
+          FilledButton(
+            onPressed: busy
+                ? null
+                : () async {
+                    update(() => busy = true);
+                    final ok = await c.setWordGroups(entry.id, selected);
+                    if (!context.mounted) return;
+                    if (ok) {
+                      Navigator.pop(dialogContext);
+                    } else {
+                      update(() {
+                        busy = false;
+                        error = c.error;
+                      });
+                    }
+                  },
+            child: const Text('保存分组'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 Future<void> showWordDetails(
   BuildContext context,
   AppController controller,
@@ -557,6 +753,12 @@ Future<void> showWordDetails(
                       ),
                     );
                   },
+                ),
+                TextButton.icon(
+                  onPressed: () =>
+                      showWordGroups(dialogContext, controller, entry),
+                  icon: const Icon(Icons.folder_copy_outlined),
+                  label: const Text('添加 / 复制 / 移动 · 编辑分组'),
                 ),
                 if (entry.uk.trim().isNotEmpty || entry.us.trim().isNotEmpty)
                   Wrap(

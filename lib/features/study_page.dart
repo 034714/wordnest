@@ -21,11 +21,13 @@ class StudyPage extends StatefulWidget {
     this.compact = false,
     this.onStartRound,
     this.onStopSpeech,
+    this.onPlaySound,
     this.paused = false,
     required this.onPause,
   });
   final StartRoundCallback? onStartRound;
   final Future<void> Function()? onStopSpeech;
+  final Future<void> Function(String sound)? onPlaySound;
   final AppController controller;
   final String mode;
   final bool compact, paused;
@@ -446,7 +448,10 @@ class _StudyPageState extends State<StudyPage> {
                       onTapOutside: (_) {},
                       onChanged: (text) {
                         if (c.settings.sound) {
-                          unawaited(SystemSound.play(SystemSoundType.click));
+                          unawaited(
+                            widget.onPlaySound?.call('key') ??
+                                Future<void>.value(),
+                          );
                         }
                         setState(() {
                           typed = text;
@@ -667,7 +672,7 @@ class _StudyPageState extends State<StudyPage> {
     }
     if (correct) {
       if (c.settings.sound) {
-        unawaited(SystemSound.play(SystemSoundType.alert));
+        unawaited(widget.onPlaySound?.call('correct') ?? Future<void>.value());
       }
       setState(() {
         typingSubmitted = true;
@@ -687,7 +692,7 @@ class _StudyPageState extends State<StudyPage> {
       return;
     }
     if (c.settings.sound) {
-      unawaited(SystemSound.play(SystemSoundType.click));
+      unawaited(widget.onPlaySound?.call('incorrect') ?? Future<void>.value());
     }
     setState(() {
       typingWrong = true;

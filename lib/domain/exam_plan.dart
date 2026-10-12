@@ -1,5 +1,46 @@
 import 'dart:math';
 
+/// A daily new-word target, independent of round size and review counts.
+/// Estimates include today as the first learning day; they are not quotas.
+class DailyNewPlan {
+  const DailyNewPlan({
+    required this.target,
+    required this.remaining,
+    required this.daysNeeded,
+    required this.completionDate,
+  });
+
+  /// Null for a legacy non-positive target, rather than silently inventing one.
+  final int? target;
+  final int remaining;
+  final int? daysNeeded;
+  final DateTime? completionDate;
+
+  static DailyNewPlan compute(
+    int dailyNew,
+    int remainingNewWords,
+    DateTime today,
+  ) {
+    final remaining = max(0, remainingNewWords);
+    final target = dailyNew > 0 ? dailyNew : null;
+    final days = remaining == 0
+        ? 0
+        : target == null
+        ? null
+        : (remaining + target - 1) ~/ target;
+    // Civil dates, not elapsed 24-hour periods (which can cross DST changes).
+    final completion = days == null
+        ? null
+        : DateTime(today.year, today.month, today.day + max(0, days - 1));
+    return DailyNewPlan(
+      target: target,
+      remaining: remaining,
+      daysNeeded: days,
+      completionDate: completion,
+    );
+  }
+}
+
 /// Pure exam pacing plan for the active book.
 ///
 /// [daysLeft] is `null` when the exam date is missing or unparseable;

@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'domain/controller.dart';
+import 'domain/models.dart';
 import 'domain/reminder_plan.dart';
 import 'features/home_page.dart';
 import 'features/study_page.dart';
@@ -31,7 +32,13 @@ class WordNestApp extends StatefulWidget {
 }
 
 class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
-  final desktop = DesktopService();
+  late final desktop = DesktopService(
+    onAudioError: (message) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _message(message);
+      });
+    },
+  );
   final updates = UpdateService();
   final navigatorKey = GlobalKey<NavigatorState>();
   final messengerKey = GlobalKey<ScaffoldMessengerState>();
@@ -115,7 +122,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
       await desktop.configure(c.settings);
       await updates.initialize();
       updates.startAutoChecks(
-        currentVersion: '0.3.0',
+        currentVersion: '0.3.1+4',
         platform: desktop.isAndroid ? 'android' : 'windows',
       );
       if (!mounted) return;
@@ -284,7 +291,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   Future<void> _checkUpdates() async {
     final result = await updates.check(
-      currentVersion: '0.3.0',
+      currentVersion: '0.3.1+4',
       platform: desktop.isAndroid ? 'android' : 'windows',
     );
     if (mounted) _message(result.message);
@@ -609,6 +616,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
               onRestart: () => _openStudy(mode, fresh: true),
               onSpeak: desktop.speak,
               onStopSpeech: desktop.stopSpeech,
+              onPlaySound: desktop.playStudySound,
               onStartRound: (m, {required resume, limit}) =>
                   _openStudy(m, fresh: !resume, limit: limit),
               onToggleCompact: _toggleCompact,
@@ -621,7 +629,12 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
               desktop: desktop,
               onPlatformChanged: _configure,
               onTestNotification: _testNotification,
-              onOpenNotebook: () async => setState(() => page = 2),
+              onOpenNotebook: () async {
+                final saved = await c.updateSettings(
+                  (s) => s.activeBookId = notebookBookId,
+                );
+                if (saved && mounted) setState(() => page = 2);
+              },
               onCalendar: _calendar,
               onCheckUpdates: _checkUpdates,
               onConfigureUpdates: _configureUpdates,
@@ -780,31 +793,56 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
     final appearance = Theme.of(context).extension<AppearanceTheme>()!;
     final surfaced =
         floating || appearance.glass || appearance.surfaceOpacity < 1;
-    final navigation = NavigationBar(
-      key: ValueKey(floating ? 'floating-navigation' : 'adaptive-navigation'),
-      backgroundColor: surfaced ? Colors.transparent : null,
-      elevation: surfaced ? 0 : null,
-      height: floating ? 72 : null,
-      // A floating bar with a large radius shows an ugly oval behind the
-      // selected item, so the indicator is dropped there; the icon/label
-      // colour still marks the current page.
-      indicatorColor: floating ? Colors.transparent : null,
-      indicatorShape: floating ? const StadiumBorder() : null,
-      selectedIndex: page,
-      onDestinationSelected: _selectPage,
-      destinations: const [
-        NavigationDestination(
-          icon: Icon(Icons.space_dashboard_outlined),
-          label: '今日',
+    final navigation = Theme(
+      data: Theme.of(context).copyWith(
+        splashFactory: NoSplash.splashFactory,
+        navigationBarTheme: NavigationBarThemeData(
+          iconTheme: WidgetStateProperty.resolveWith(
+            (states) => IconThemeData(
+              color: states.contains(WidgetState.selected)
+                  ? Theme.of(context).colorScheme.primary
+                  : Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
         ),
-        NavigationDestination(icon: Icon(Icons.style_outlined), label: '学习'),
-        NavigationDestination(
-          icon: Icon(Icons.auto_stories_outlined),
-          label: '词书',
-        ),
-        NavigationDestination(icon: Icon(Icons.bar_chart_rounded), label: '记录'),
-        NavigationDestination(icon: Icon(Icons.tune_rounded), label: '设置'),
-      ],
+      ),
+      child: NavigationBar(
+        key: ValueKey(floating ? 'floating-navigation' : 'adaptive-navigation'),
+        backgroundColor: surfaced ? Colors.transparent : null,
+        elevation: surfaced ? 0 : null,
+        height: floating ? 72 : null,
+        // Both layouts use icon/label feedback, never a Material state layer.
+        indicatorColor: Colors.transparent,
+        overlayColor: const WidgetStatePropertyAll(Colors.transparent),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return TextStyle(
+            fontSize: 12,
+            color: selected
+                ? Theme.of(context).colorScheme.primary
+                : Theme.of(context).colorScheme.onSurfaceVariant,
+            fontWeight: selected ? FontWeight.w700 : FontWeight.w400,
+          );
+        }),
+        selectedIndex: page,
+        onDestinationSelected: _selectPage,
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.space_dashboard_outlined),
+            label: '今日',
+          ),
+          NavigationDestination(icon: Icon(Icons.style_outlined), label: '学习'),
+          NavigationDestination(
+            icon: Icon(Icons.auto_stories_outlined),
+            label: '词书',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.bar_chart_rounded),
+            label: '记录',
+          ),
+          NavigationDestination(icon: Icon(Icons.tune_rounded), label: '设置'),
+        ],
+      ),
     );
     if (!surfaced) return navigation;
     final surface = SurfaceMaterial(

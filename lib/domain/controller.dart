@@ -20,9 +20,122 @@ class AppController extends ChangeNotifier {
   bool ready = false, saving = false;
   Future<void> _pending = Future.value();
   AppSettings get settings => state.settings;
-  WordBook? get book =>
-      state.books.where((b) => b.id == settings.activeBookId).firstOrNull ??
-      state.books.firstOrNull;
+  List<WordBook> get libraryBooks => [...state.books, notebookBook(state)];
+  WordBook? get book => settings.activeBookId == notebookBookId
+      ? notebookBook(state)
+      : state.books.where((b) => b.id == settings.activeBookId).firstOrNull ??
+            state.books.firstOrNull;
+
+  List<WordBook> groupsFor(String entryId) =>
+      libraryBooks.where((b) => b.uniqueIds.contains(entryId)).toList();
+
+  String _bookTitle(String title, {String? exceptId}) {
+    final name = title.trim();
+    if (name.isEmpty || name.length > 100) {
+      throw const FormatException('词书名称需为 1–100 个字符');
+    }
+    if (libraryBooks.any((b) => b.id != exceptId && b.title == name)) {
+      throw const FormatException('已有同名词书，请使用其他名称');
+    }
+    return name;
+  }
+
+  Future<bool> _editBooks(void Function(AppSnapshot) edit) => _write(() async {
+    final next = state.clone();
+    edit(next);
+    await storage.replace(next);
+    state = next;
+  });
+
+  Future<bool> createBook(String title) => _editBooks((next) {
+    final name = _bookTitle(title);
+    final id = 'custom-${eventId()}';
+    next.books.add(
+      WordBook(
+        id: id,
+        title: name,
+        members: const [],
+        importedAt: now,
+        source: '自建词书',
+      ),
+    );
+    next.settings.activeBookId = id;
+  });
+
+  Future<bool> renameBook(String id, String title) => _editBooks((next) {
+    if (id == notebookBookId) throw const FormatException('生词本名称固定');
+    final index = next.books.indexWhere((b) => b.id == id);
+    if (index < 0) throw const FormatException('词书不存在');
+    final old = next.books[index];
+    next.books[index] = WordBook(
+      id: id,
+      title: _bookTitle(title, exceptId: id),
+      members: old.members,
+      importedAt: old.importedAt,
+      source: old.source,
+    );
+  });
+
+  void _membership(AppSnapshot next, String entryId, String bookId, bool add) {
+    if (!next.entries.containsKey(entryId)) {
+      throw const FormatException('单词不存在');
+    }
+    if (bookId == notebookBookId) {
+      if (add == next.notebook.contains(entryId)) return;
+      add ? next.notebook.add(entryId) : next.notebook.remove(entryId);
+      next.notebookProgress.remove(entryId);
+      return;
+    }
+    final index = next.books.indexWhere((b) => b.id == bookId);
+    if (index < 0) throw const FormatException('词书不存在');
+    final old = next.books[index];
+    final members = [...old.members];
+    if (add) {
+      if (old.uniqueIds.contains(entryId)) return;
+      final position = members.fold<int>(-1, (v, m) => max(v, m.position)) + 1;
+      members.add(
+        BookMember(entryId: entryId, unit: '自选词条', position: position),
+      );
+    } else {
+      members.removeWhere((m) => m.entryId == entryId);
+    }
+    next.books[index] = WordBook(
+      id: old.id,
+      title: old.title,
+      members: members,
+      importedAt: old.importedAt,
+      source: old.source,
+    );
+  }
+
+  /// Copy shares the global entry/card; move removes only the source relation.
+  Future<bool> copyWord(String entryId, String targetBookId) =>
+      _editBooks((next) => _membership(next, entryId, targetBookId, true));
+
+  Future<bool> moveWord(
+    String entryId,
+    String sourceBookId,
+    String targetBookId,
+  ) => _editBooks((next) {
+    if (!groupsFor(entryId).any((b) => b.id == sourceBookId)) {
+      throw const FormatException('单词不在来源词书中');
+    }
+    _membership(next, entryId, targetBookId, true);
+    if (sourceBookId != targetBookId) {
+      _membership(next, entryId, sourceBookId, false);
+    }
+  });
+
+  /// No memberships is allowed: the global word, notes and history survive.
+  Future<bool> setWordGroups(String entryId, Set<String> bookIds) =>
+      _editBooks((next) {
+        for (final id in bookIds) {
+          _membership(next, entryId, id, true);
+        }
+        for (final b in libraryBooks) {
+          if (!bookIds.contains(b.id)) _membership(next, entryId, b.id, false);
+        }
+      });
   List<WordEntry> get words => (book?.uniqueIds ?? [])
       .map((id) => state.entries[id])
       .whereType<WordEntry>()
@@ -215,6 +328,24 @@ class AppController extends ChangeNotifier {
     state.notebook = notebook;
     state.notebookProgress = progress;
   });
+
+  /// Library sorting preserves source order whenever sort keys are equal.
+  List<WordEntry> sortLibraryWords(List<WordEntry> entries, String order) {
+    final indexed = entries.indexed.toList();
+    indexed.sort((a, b) {
+      var comparison = 0;
+      if (order == 'alpha') {
+        comparison = a.$2.word.toLowerCase().compareTo(b.$2.word.toLowerCase());
+      } else if (order == 'noted') {
+        bool marked(WordEntry entry) =>
+            isNotebook(entry.id) ||
+            state.notes[entry.id]?.trim().isNotEmpty == true;
+        comparison = (marked(b.$2) ? 1 : 0).compareTo(marked(a.$2) ? 1 : 0);
+      }
+      return comparison != 0 ? comparison : a.$1.compareTo(b.$1);
+    });
+    return [for (final item in indexed) item.$2];
+  }
 
   /// 最近的正式答错记录，最新在前；[limit] 为 null 时返回全部。
   List<LearningEvent> wrongFormalEvents({int? limit}) {

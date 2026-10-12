@@ -3,6 +3,61 @@ import 'package:wordnest/domain/exam_plan.dart';
 
 void main() {
   final today = DateTime(2026, 10, 11, 15, 30);
+  test('daily target estimates without an exam, including today', () {
+    final plan = DailyNewPlan.compute(50, 101, today);
+    expect(plan.target, 50);
+    expect(plan.remaining, 101);
+    expect(plan.daysNeeded, 3);
+    expect(plan.completionDate, DateTime(2026, 10, 13));
+    expect(
+      DailyNewPlan.compute(50, 50, today).completionDate,
+      DateTime(2026, 10, 11),
+    );
+    expect(DailyNewPlan.compute(50, 100, today).daysNeeded, 2);
+  });
+  test(
+    'daily target has no upper quota and invalid legacy values are explicit',
+    () {
+      expect(DailyNewPlan.compute(1000, 2001, today).daysNeeded, 3);
+      for (final target in [0, -1]) {
+        final plan = DailyNewPlan.compute(target, 100, today);
+        expect(plan.target, isNull);
+        expect(plan.daysNeeded, isNull);
+        expect(plan.completionDate, isNull);
+      }
+      final done = DailyNewPlan.compute(0, -2, today);
+      expect(done.remaining, 0);
+      expect(done.daysNeeded, 0);
+      expect(done.completionDate, DateTime(2026, 10, 11));
+    },
+  );
+  test(
+    'daily estimate uses civil dates across month year and leap boundaries',
+    () {
+      expect(
+        DailyNewPlan.compute(1, 3, DateTime(2026, 12, 31, 23)).completionDate,
+        DateTime(2027, 1, 2),
+      );
+      expect(
+        DailyNewPlan.compute(1, 2, DateTime(2028, 2, 28)).completionDate,
+        DateTime(2028, 2, 29),
+      );
+      expect(
+        DailyNewPlan.compute(1, 3, DateTime(2026, 3, 7)).completionDate,
+        DateTime(2026, 3, 9),
+      );
+    },
+  );
+  test(
+    'exam recommendation stays independent of the selected daily target',
+    () {
+      final daily = DailyNewPlan.compute(50, 120, today);
+      final exam = ExamPlan.compute('2026-10-13', 120, today);
+      expect(daily.daysNeeded, 3);
+      expect(exam.perDay, 60);
+    },
+  );
+
   test('no or unparseable exam date yields an unplanned plan', () {
     for (final date in ['', 'not-a-date', '  ', 'tomorrow', '2026-1x-11']) {
       final plan = ExamPlan.compute(date, 120, today);

@@ -68,6 +68,42 @@ void main() {
     return c;
   }
 
+  test(
+    'library sorting keeps equal keys in source order without mutation',
+    () async {
+      final c = await create();
+      final entries = [
+        for (var i = 0; i < 40; i++)
+          WordEntry(
+            id: 'sort$i',
+            word: i.isEven ? 'Apple' : 'apple',
+            meaning: '苹果',
+          ),
+      ];
+      final original = entries.map((e) => e.id).toList();
+      c.state.notes['sort31'] = 'note';
+      c.state.notebook.add('sort7');
+      c.state.notes['sort2'] = '  ';
+      expect(c.sortLibraryWords(entries, 'alpha').map((e) => e.id), original);
+      final marked = c
+          .sortLibraryWords(entries, 'noted')
+          .map((e) => e.id)
+          .toList();
+      expect(marked, [
+        'sort7',
+        'sort31',
+        for (final id in original)
+          if (id != 'sort7' && id != 'sort31') id,
+      ]);
+      expect(
+        c.sortLibraryWords(entries, 'original').map((e) => e.id),
+        original,
+      );
+      expect(entries.map((e) => e.id), original);
+      expect(c.sortLibraryWords([], 'noted'), isEmpty);
+    },
+  );
+
   test('failed storage keeps UI progress and permits retry', () async {
     final storage = FailingStorage();
     final c = await create(storage);

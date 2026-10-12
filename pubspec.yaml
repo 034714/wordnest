@@ -1,7 +1,7 @@
 name: wordnest
 description: "词栖 · 本地优先的轻量记词工具"
 publish_to: none
-version: 0.3.0+3
+version: 0.3.1+4
 
 environment:
   sdk: ^3.13.5
@@ -48,5 +48,5 @@ msix_config:
   display_name: 词栖 WordNest
   publisher_display_name: WordNest
   identity_name: io.wordnest.wordnest
-  msix_version: 0.3.0.0
+  msix_version: 0.3.1.0
   capabilities: internetClient

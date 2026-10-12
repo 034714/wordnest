@@ -8,8 +8,26 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    private var studySounds: StudySoundPlayer? = null
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/sound")
+            .setMethodCallHandler(null)
+        studySounds?.release()
+        studySounds = null
+        super.cleanUpFlutterEngine(flutterEngine)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        studySounds = StudySoundPlayer(this)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/sound")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "play") {
+                    studySounds?.play(call.argument<String>("sound"), result)
+                        ?: result.error("sound_unavailable", "Sound player unavailable", null)
+                } else result.notImplemented()
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "io.wordnest/calendar")
             .setMethodCallHandler { call, result ->
                 if (call.method != "insertEvent") {

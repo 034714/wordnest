@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../domain/controller.dart';
+import '../domain/exam_plan.dart';
 import '../platform/desktop_service.dart';
 import 'shared_widgets.dart';
 
@@ -110,6 +111,10 @@ class _HomePageState extends State<HomePage> {
                 ],
               ),
               const SizedBox(height: 28),
+              if (c.book != null) ...[
+                _dailyPlan(c, theme),
+                const SizedBox(height: 22),
+              ],
               SurfaceMaterial(
                 color: dark ? const Color(0xff233e2e) : const Color(0xffe7efdd),
                 borderRadius: BorderRadius.circular(24),
@@ -205,6 +210,8 @@ class _HomePageState extends State<HomePage> {
                                 ],
                               ),
                               const SizedBox(height: 12),
+                              const Text('每轮数量 · 新词与复习合计，不是每日新词计划'),
+                              const SizedBox(height: 8),
                               RoundCountChips(
                                 value: count ?? c.settings.roundSize,
                                 enabled: !c.saving,
@@ -437,8 +444,6 @@ class _HomePageState extends State<HomePage> {
                           ),
                         ],
                       ),
-                      const SizedBox(height: 14),
-                      _examLine(c, theme),
                     ],
                   ),
                 ),
@@ -537,11 +542,117 @@ class _HomePageState extends State<HomePage> {
       ),
     ),
   );
+  Future<void> _editDailyPlan() async {
+    final input = TextEditingController(
+      text: controller.settings.dailyNew.toString(),
+    );
+    String? error;
+    final value = await showDialog<int>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('调整每日新词计划'),
+          content: TextField(
+            key: const ValueKey('daily-new-input'),
+            controller: input,
+            autofocus: true,
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(
+              labelText: '每天计划认识多少个新词',
+              helperText: '仅用于估算，不限制学习；每轮数量单独设置。',
+              helperMaxLines: 2,
+              errorText: error,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () {
+                final target = int.tryParse(input.text.trim());
+                if (target == null || target <= 0) {
+                  update(() => error = '请输入大于 0 的整数');
+                  return;
+                }
+                Navigator.pop(context, target);
+              },
+              child: const Text('保存计划'),
+            ),
+          ],
+        ),
+      ),
+    );
+    // Let the dialog's exit animation release its text field first.
+    await Future<void>.delayed(const Duration(milliseconds: 300));
+    input.dispose();
+    if (value == null || !mounted) return;
+    final saved = await controller.updateSettings((s) => s.dailyNew = value);
+    if (!mounted) return;
+    setState(() {});
+    if (!saved) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('计划保存失败，请重试。')));
+    }
+  }
+
+  Widget _dailyPlan(AppController c, ThemeData theme) {
+    final plan = DailyNewPlan.compute(c.settings.dailyNew, c.remaining, c.now);
+    final completion = plan.completionDate;
+    final dateLabel = completion == null
+        ? '设置每日计划后估算'
+        : '${completion.year}-${completion.month.toString().padLeft(2, '0')}-${completion.day.toString().padLeft(2, '0')}';
+    return SurfaceCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  '每日新词计划',
+                  style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+                ),
+              ),
+              TextButton(
+                key: const ValueKey('edit-daily-new'),
+                onPressed: c.saving ? null : _editDailyPlan,
+                child: const Text('调整计划'),
+              ),
+            ],
+          ),
+          Wrap(
+            spacing: 24,
+            runSpacing: 10,
+            children: [
+              Text(plan.target == null ? '每日目标未设置' : '每日新词 ${plan.target} 个'),
+              Text('剩余新词 ${plan.remaining} 个'),
+              Text(
+                plan.daysNeeded == null
+                    ? '预计天数待设置'
+                    : '预计 ${plan.daysNeeded} 天学完',
+              ),
+              Text('预计完成日期 $dateLabel'),
+            ],
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '按剩余未认识词量估算，今天算第 1 天；复习次数不计入新词完成数。计划不是学习上限。',
+            style: TextStyle(fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          _examLine(c, theme),
+        ],
+      ),
+    );
+  }
+
   Widget _examLine(AppController c, ThemeData theme) {
     final plan = c.examPlan;
     if (!plan.planned) {
       return Text(
-        '设置考试日期后，词栖会按剩余词量给出每天建议新词的参考。',
+        '无需考试日期也可按每日计划学习；设置考试日期后另提供倒推推荐量。',
         style: TextStyle(
           fontSize: 12,
           color: theme.colorScheme.onSurfaceVariant,
@@ -553,13 +664,22 @@ class _HomePageState extends State<HomePage> {
       fontWeight: FontWeight.w700,
       color: theme.colorScheme.primary,
     );
+    if (plan.done) {
+      return Text('考试计划：剩余词条已经覆盖，按节奏复习即可。', style: accent);
+    }
     if (plan.expired) {
-      return Text('考试日期已到。今天保持节奏，不必突击大量新词。', style: accent);
+      return Text(
+        '考试日期已到 · 倒推推荐今天认识 ${plan.perDay} 个新词。仅供参考，不必突击。',
+        style: accent,
+      );
     }
     final perDay = plan.perDay;
     if (perDay == null || perDay <= 0) {
       return Text('考试计划：剩余词条已经覆盖，按节奏复习即可。', style: accent);
     }
-    return Text('距考试 ${plan.daysLeft ?? 0} 天 · 每天约 $perDay 词', style: accent);
+    return Text(
+      '距考试 ${plan.daysLeft ?? 0} 天 · 倒推推荐每日新词 $perDay 个',
+      style: accent,
+    );
   }
 }

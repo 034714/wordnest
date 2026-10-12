@@ -908,7 +908,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 onPressed: () => showLicensePage(
                   context: context,
                   applicationName: '词栖',
-                  applicationVersion: '0.3.0',
+                  applicationVersion: '0.3.1',
                   applicationLegalese: '本地优先的轻量记词工具',
                 ),
                 icon: const Icon(Icons.menu_book_outlined),
@@ -933,7 +933,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ),
               const SizedBox(height: 10),
-              Text('词栖 · 0.3.0', style: theme.textTheme.titleSmall),
+              Text('词栖 · 0.3.1', style: theme.textTheme.titleSmall),
             ],
           ),
           const SizedBox(height: 8),

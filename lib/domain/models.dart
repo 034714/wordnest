@@ -2,6 +2,20 @@ import 'dart:convert';
 
 String wordKey(String word) => word.trim().toLowerCase();
 
+/// Reserved virtual book identity; membership is always derived from notebook.
+const notebookBookId = 'wordnest:system:notebook';
+
+WordBook notebookBook(AppSnapshot snapshot) => WordBook(
+  id: notebookBookId,
+  title: '生词本',
+  source: '动态词书 · 与正式错题及手动增删同步',
+  importedAt: DateTime.utc(2026),
+  members: [
+    for (final (index, id) in snapshot.notebook.indexed)
+      BookMember(entryId: id, unit: '生词本', position: index),
+  ],
+);
+
 class WordEntry {
   const WordEntry({
     required this.id,
@@ -319,7 +333,7 @@ class AppSettings {
       activeBookId: d['activeBookId'] as String,
       theme: d['theme'] as String,
       roundSize: (d['roundSize'] as int).clamp(1, 50),
-      dailyNew: (d['dailyNew'] as int).clamp(1, 100),
+      dailyNew: (d['dailyNew'] as int).clamp(1, 9007199254740991),
       dailyLimit: (d['dailyLimit'] as int).clamp(1, 500),
       adaptive: d['adaptive'] as bool,
       showChinese: d['showChinese'] as bool,

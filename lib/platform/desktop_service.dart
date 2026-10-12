@@ -41,8 +41,61 @@ class AndroidReminderWord {
 /// from ordinary no-op calls. Notification permission is never requested by
 /// [initialize]; call [requestNotifications] after the user opts in.
 class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
-  DesktopService({FlutterLocalNotificationsPlugin? notifications})
-    : _notifications = notifications ?? FlutterLocalNotificationsPlugin();
+  DesktopService({
+    FlutterLocalNotificationsPlugin? notifications,
+    this.onAudioError,
+  }) : _notifications = notifications ?? FlutterLocalNotificationsPlugin();
+
+  final ValueChanged<String>? onAudioError;
+  Future<void>? _ttsInitialization;
+  String? _reportedAudioError;
+  static const _soundChannel = MethodChannel('io.wordnest/sound');
+
+  void _audioError(String message) {
+    _setError(message);
+    // Avoid flooding the user on every key when audio is unavailable.
+    if (_reportedAudioError != message) {
+      _reportedAudioError = message;
+      onAudioError?.call(message);
+    }
+  }
+
+  Future<void> playStudySound(String sound) async {
+    if (_settings?.sound == false) return;
+    if (!const ['key', 'correct', 'incorrect'].contains(sound)) return;
+    try {
+      if (isAndroid) {
+        await _soundChannel.invokeMethod<void>('play', {'sound': sound});
+      } else if (isWindows) {
+        // Windows' system alert is audible; Android uses bundled PCM instead.
+        await SystemSound.play(SystemSoundType.alert);
+      }
+    } catch (_) {
+      _audioError('键盘音效无法播放，请检查媒体音量或重新打开应用。');
+    }
+  }
+
+  Future<void> _ensureTts() => _ttsInitialization ??= _initializeTts();
+
+  Future<void> _initializeTts() async {
+    try {
+      _tts.setErrorHandler((message) {
+        _ttsInitialization = null;
+        _audioError('朗读失败：$message。请检查系统文字转语音引擎和英语语音数据。');
+      });
+      if (await _tts.isLanguageAvailable('en-US') != true) {
+        throw StateError('系统没有可用的英语语音，请安装英语离线语音数据');
+      }
+      if (await _tts.setLanguage('en-US') != 1) {
+        throw StateError('无法设置英语朗读语言');
+      }
+      await _tts.setSpeechRate(0.45);
+      await _tts.setVolume(1.0);
+    } catch (_) {
+      _ttsInitialization = null;
+      rethrow;
+    }
+  }
 
   final FlutterLocalNotificationsPlugin _notifications;
   final FlutterTts _tts = FlutterTts();
@@ -502,10 +555,15 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
     if (word.trim().isEmpty) return;
     try {
       if (_settings?.tts == false) return;
+      await _ensureTts();
       await _tts.stop();
-      await _tts.speak(word.trim());
+      if (await _tts.speak(word.trim()) != 1) {
+        throw StateError('语音引擎拒绝朗读请求');
+      }
+      _reportedAudioError = null;
     } catch (error) {
-      _setError('Text to speech failed: $error');
+      _ttsInitialization = null;
+      _audioError('朗读失败：$error。请检查系统文字转语音引擎、英语语音数据和媒体音量。');
     }
   }
 
@@ -804,10 +862,9 @@ class DesktopService extends ChangeNotifier with TrayListener, WindowListener {
   Future<void> _configureTts(AppSettings settings) async {
     if (!settings.tts) return;
     try {
-      await _tts.setLanguage('en-US');
-      await _tts.setSpeechRate(0.45);
+      await _ensureTts();
     } catch (error) {
-      _setError('Text to speech setup failed: $error');
+      _audioError('朗读初始化失败：$error。请检查系统文字转语音引擎和英语语音数据。');
     }
   }
 

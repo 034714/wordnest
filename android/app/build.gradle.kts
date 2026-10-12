@@ -4,6 +4,18 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+// Secrets are supplied only through the build process environment.
+val releaseSigningEnvironment = listOf(
+    "WORDNEST_KEYSTORE_PATH",
+    "WORDNEST_STORE_PASSWORD",
+    "WORDNEST_KEY_ALIAS",
+    "WORDNEST_KEY_PASSWORD",
+).associateWith { System.getenv(it) }
+val hasReleaseSigning = releaseSigningEnvironment.values.all { !it.isNullOrBlank() }
+require(releaseSigningEnvironment.values.all { it.isNullOrBlank() } || hasReleaseSigning) {
+    "Set all four WORDNEST signing environment variables, or none for debug fallback."
+}
+
 android {
     namespace = "io.wordnest.wordnest"
     compileSdk = flutter.compileSdkVersion
@@ -32,11 +44,23 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("environmentRelease") {
+                storeFile = file(releaseSigningEnvironment.getValue("WORDNEST_KEYSTORE_PATH")!!)
+                storePassword = releaseSigningEnvironment.getValue("WORDNEST_STORE_PASSWORD")
+                keyAlias = releaseSigningEnvironment.getValue("WORDNEST_KEY_ALIAS")
+                keyPassword = releaseSigningEnvironment.getValue("WORDNEST_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Local builds without credentials may use debug; publication must inject all four variables.
+            signingConfig = signingConfigs.getByName(
+                if (hasReleaseSigning) "environmentRelease" else "debug",
+            )
         }
     }
 }

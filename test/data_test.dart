@@ -832,7 +832,7 @@ void main() {
       });
     });
 
-    test('deleting a book drops its notebook members and counters', () async {
+    test('deleting a book preserves notebook members and counters', () async {
       await _withFileStorage((storage, path) async {
         await storage.replace(_validSnapshot());
         final incoming = ImportParser.parse('cat\t猫\ndog\t狗', 'two.txt');
@@ -840,8 +840,8 @@ void main() {
         await storage.saveNotebook({'cat', 'dog'}, {'dog': 1});
         await storage.deleteBook(incoming.book.id);
         final saved = await storage.load();
-        expect(saved.notebook, {'cat'});
-        expect(saved.notebookProgress, isEmpty);
+        expect(saved.notebook, {'cat', 'dog'});
+        expect(saved.notebookProgress, {'dog': 1});
       });
     });
 
@@ -928,36 +928,43 @@ void main() {
       },
     );
 
-    test('deleting one book preserves shared learning and removes only orphan data', () async {
-      await _withFileStorage((storage, path) async {
-        await storage.replace(_validSnapshot());
-        final incoming = ImportParser.parse('cat\t猫\ndog\t狗', 'two.txt');
-        await storage.importBook(incoming);
-        await storage.saveNote('dog', 'orphan note');
-        await storage.commitLearning(
-          ReviewCard(entryId: 'dog', due: DateTime.utc(2026)),
-          LearningEvent(
-            id: 'dog-event',
-            entryId: 'dog',
-            kind: 'view',
-            at: DateTime.utc(2026),
-          ),
-        );
-        await storage.deleteBook(incoming.book.id);
-        final saved = await storage.load();
-        expect(saved.entries.keys, ['cat']);
-        expect(saved.cards.keys, ['cat']);
-        expect(saved.notes.keys, ['cat']);
-        expect(saved.events.map((event) => event.id), ['event-1']);
-        expect(saved.settings.activeBookId, 'book-1');
-        await storage.deleteBook('book-1');
-        final empty = await storage.load();
-        expect(empty.books, isEmpty);
-        expect(empty.entries, isEmpty);
-        expect(empty.session, isEmpty);
-        expect(empty.settings.activeBookId, '');
-      });
-    });
+    test(
+      'deleting even the last book preserves global learning data',
+      () async {
+        await _withFileStorage((storage, path) async {
+          await storage.replace(_validSnapshot());
+          final incoming = ImportParser.parse('cat\t猫\ndog\t狗', 'two.txt');
+          await storage.importBook(incoming);
+          await storage.saveNote('dog', 'orphan note');
+          await storage.commitLearning(
+            ReviewCard(entryId: 'dog', due: DateTime.utc(2026)),
+            LearningEvent(
+              id: 'dog-event',
+              entryId: 'dog',
+              kind: 'view',
+              at: DateTime.utc(2026),
+            ),
+          );
+          await storage.deleteBook(incoming.book.id);
+          final saved = await storage.load();
+          expect(saved.entries.keys, containsAll(['cat', 'dog']));
+          expect(saved.cards.keys, containsAll(['cat', 'dog']));
+          expect(saved.notes.keys, containsAll(['cat', 'dog']));
+          expect(
+            saved.events.map((event) => event.id),
+            containsAll(['event-1', 'dog-event']),
+          );
+          expect(saved.settings.activeBookId, 'book-1');
+          await storage.deleteBook('book-1');
+          final empty = await storage.load();
+          expect(empty.books, isEmpty);
+          expect(empty.entries.keys, containsAll(['cat', 'dog']));
+          expect(empty.notes['dog'], 'orphan note');
+          expect(empty.session, isEmpty);
+          expect(empty.settings.activeBookId, '');
+        });
+      },
+    );
 
     test('benchmarks generated 2331-member import, preserves all original positions after reopen', () async {
       await _withFileStorage((storage, path) async {

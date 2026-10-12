@@ -256,11 +256,11 @@ void main() {
         expect(file.existsSync(), isTrue, reason: file.path);
         final text = file.readAsStringSync();
         final parsed = parseUpdateMetadata(text, platform: platform);
-        expect(parsed.version, '0.2.0');
+        expect(parsed.version, '0.3.1+4');
         expect(parsed.downloadUrl.host, 'github.com');
         expect(
           parsed.downloadUrl.path,
-          contains('/034714/wordnest/releases/download/v0.2.0/'),
+          contains('/034714/wordnest/releases/download/v0.3.1/'),
         );
         var calls = 0;
         SharedPreferences.setMockInitialValues({});
@@ -279,7 +279,7 @@ void main() {
         );
         await service.initialize();
         final result = await service.check(
-          currentVersion: '0.2.0',
+          currentVersion: '0.3.1+4',
           platform: platform,
         );
         expect(result.state, UpdateState.upToDate);

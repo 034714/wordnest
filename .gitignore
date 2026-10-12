@@ -12,6 +12,10 @@ artifacts/
 delivery/
 **/ephemeral/
 **/.plugin_symlinks/
+windows/flutter/generated_plugin_registrant.cc
+windows/flutter/generated_plugin_registrant.h
+windows/flutter/generated_plugins.cmake
+android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
 android/.gradle/
 android/.kotlin/
 android/local.properties
@@ -36,8 +40,3 @@ research/
 *.msix
 *.exe
 *.zip
-
-# Flutter generated plugin registration
-windows/flutter/generated_plugin_registrant.cc
-windows/flutter/generated_plugin_registrant.h
-windows/flutter/generated_plugins.cmake
