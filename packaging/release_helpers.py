@@ -347,8 +347,19 @@ def read_preparation(root: Path, public: bool) -> dict:
             or value.get('project_root') != str(root) or value.get('public') is not public
             or value.get('version') != read_version(root).full):
         raise ValueError('Preparation root, mode, or version mismatch; prepare and rebuild.')
-    if value.get('source_sha256') != source_snapshot(root):
-        raise ValueError('Release sources changed after prepare; prepare and rebuild.')
+    current = source_snapshot(root)
+    if value.get('source_sha256') != current:
+        before = value.get('source_sha256', {})
+        added = sorted(set(current) - set(before))
+        removed = sorted(set(before) - set(current))
+        changed = sorted(name for name in set(current) & set(before)
+                         if current[name] != before[name])
+        details = '; '.join(filter(None, [
+            f'added={added}' if added else '',
+            f'removed={removed}' if removed else '',
+            f'changed={changed}' if changed else '',
+        ]))
+        raise ValueError(f'Release sources changed after prepare; prepare and rebuild. ({details})')
     return value
 
 
