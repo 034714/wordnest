@@ -31,6 +31,7 @@ class SettingsPage extends StatefulWidget {
     this.onPickBackground,
     this.onDeleteBackground,
     this.onOpenNotebook,
+    this.appVersion = '0.0.0',
   });
 
   final Future<String?> Function()? onPickBackground;
@@ -44,6 +45,7 @@ class SettingsPage extends StatefulWidget {
   /// 「打开生词本」按钮会把词书页作为新路由推入，保证按钮始终可用。
   final Future<void> Function()? onOpenNotebook;
   final String updateStatus;
+  final String appVersion;
   final UpdateService? updates;
   final bool native;
   final AppController controller;
@@ -1018,7 +1020,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 onPressed: () => showLicensePage(
                   context: context,
                   applicationName: '词栖',
-                  applicationVersion: '0.3.3',
+                  applicationVersion: widget.appVersion.split('+').first,
                   applicationLegalese: '本地优先的轻量记词工具',
                 ),
                 icon: const Icon(Icons.menu_book_outlined),
@@ -1074,7 +1076,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       widget.desktop.openUrl(url.toString()),
                 ),
               const SizedBox(height: 10),
-              Text('词栖 · 0.3.3', style: theme.textTheme.titleSmall),
+              Text('词栖 · ${widget.appVersion.split('+').first}', style: theme.textTheme.titleSmall),
             ],
           ),
           const SizedBox(height: 8),

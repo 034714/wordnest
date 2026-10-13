@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import 'domain/controller.dart';
 import 'domain/models.dart';
@@ -52,6 +53,12 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
   String? _backgroundAsset;
   Uint8List? _backgroundBytes;
   int _backgroundRequest = 0;
+  PackageInfo? _packageInfo;
+
+  /// Runtime app version read from pubspec.yaml via package_info_plus,
+  /// so update checks and the about screen never drift from the real build.
+  String get _appVersion =>
+      '${_packageInfo?.version ?? '0.0.0'}+${_packageInfo?.buildNumber ?? '0'}';
 
   void _syncBackground() {
     final asset = c.settings.backgroundAsset;
@@ -120,9 +127,10 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
         },
       );
       await desktop.configure(c.settings);
+      _packageInfo = await PackageInfo.fromPlatform();
       await updates.initialize();
       updates.startAutoChecks(
-        currentVersion: '0.3.3+6',
+        currentVersion: _appVersion,
         platform: desktop.isAndroid ? 'android' : 'windows',
       );
       if (!mounted) return;
@@ -291,7 +299,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
 
   Future<void> _checkUpdates() async {
     final result = await updates.check(
-      currentVersion: '0.3.3+6',
+      currentVersion: _appVersion,
       platform: desktop.isAndroid ? 'android' : 'windows',
     );
     if (mounted) _message(result.message);
@@ -626,6 +634,7 @@ class _WordNestAppState extends State<WordNestApp> with WidgetsBindingObserver {
               native: widget.native,
               controller: c,
               desktop: desktop,
+              appVersion: _appVersion,
               onPlatformChanged: _configure,
               onTestNotification: _testNotification,
               onOpenNotebook: () async {

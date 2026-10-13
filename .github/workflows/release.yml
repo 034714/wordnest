@@ -5,6 +5,15 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      build_android:
+        description: 'Build Android APK'
+        type: boolean
+        default: true
+      build_windows:
+        description: 'Build Windows installer + portable'
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -13,16 +22,19 @@ jobs:
   build-and-release:
     runs-on: windows-latest
     env:
-      WORDNEST_KEYSTORE_PATH: ${{ github.workspace }}\cjx.jks
-      WORDNEST_STORE_PASSWORD: ${{ secrets.WORDNEST_STORE_PASSWORD }}
-      WORDNEST_KEY_ALIAS: ${{ secrets.WORDNEST_KEY_ALIAS }}
-      WORDNEST_KEY_PASSWORD: ${{ secrets.WORDNEST_KEY_PASSWORD }}
+      # Keystore (keystore.jks) is committed to the repo; credentials are provided
+      # directly so release signing works out of the box. For tighter security,
+      # move these to GitHub Secrets and reference them via secrets.* instead.
+      WORDNEST_KEYSTORE_PATH: ${{ github.workspace }}\keystore.jks
+      WORDNEST_STORE_PASSWORD: REDACTED
+      WORDNEST_KEY_ALIAS: 233
+      WORDNEST_KEY_PASSWORD: REDACTED
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -30,7 +42,6 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.27.1'
           channel: stable
           cache: true
 
@@ -43,16 +54,27 @@ jobs:
       - name: Flutter pub get
         run: flutter pub get
 
+      - name: Prepare release (lock source snapshot)
+        run: python packaging/release_helpers.py prepare --public
+
       - name: Build Android APK (arm64-v8a, release-signed)
+        if: ${{ github.event_name == 'push' || inputs.build_android }}
         run: flutter build apk --release --split-per-abi
 
       - name: Build Windows release
+        if: ${{ github.event_name == 'push' || inputs.build_windows }}
         run: flutter build windows --release
 
+      - name: Record release (validate builds + write receipt)
+        if: ${{ (github.event_name == 'push') || (inputs.build_android && inputs.build_windows) }}
+        run: python packaging/release_helpers.py record --public
+
       - name: Package release (installer + portable + APK)
+        if: ${{ (github.event_name == 'push') || (inputs.build_android && inputs.build_windows) }}
         run: python packaging/windows/package.py --public --output-dir dist
 
       - name: Create GitHub Release
+        if: ${{ (github.event_name == 'push') || (inputs.build_android && inputs.build_windows) }}
         uses: softprops/action-gh-release@v2
         with:
           files: |
