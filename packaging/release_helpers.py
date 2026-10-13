@@ -33,7 +33,8 @@ GENERATED_PARTS = {'.gradle', '.kotlin', '.dart_tool', 'build', 'ephemeral',
                    '.plugin_symlinks', '__pycache__'}
 GENERATED_NAMES = {'local.properties', 'GeneratedPluginRegistrant.java',
                    'generated_plugin_registrant.cc', 'generated_plugin_registrant.h',
-                   'generated_plugins.cmake'}
+                   'generated_plugins.cmake', 'gradlew', 'gradlew.bat',
+                   'gradle-wrapper.jar'}
 
 
 @dataclass(frozen=True)
