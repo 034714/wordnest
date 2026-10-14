@@ -4,7 +4,7 @@
 
 ## 一、安全红线（任何时候不得违反）
 
-1. **秘密不入库**：真实 keystore、私钥、证书、密码、token、secrets 不得进入 Git 提交、公开导出、发布包或日志。签名材料放仓库外私密目录或 CI Secrets；发现泄露立即停止传播并报告，而不是只加 .gitignore。
+1. **秘密不入库**：真实 keystore、私钥、证书、密码、token、secrets 不得进入 Git 提交、公开导出、发布包或日志。签名材料放仓库外私密目录或 CI Secrets；发现泄露立即停止传播并报告，而不是只加 .gitignore。AI 不得读取、展示、复制或上传凭据内容；对外报告只能引用存放路径与证书指纹，不得包含秘密值本身。
 2. **保护数据**：不删除数据库（含 WAL/SHM）、用户笔记、词书/字典原件、research 目录、源码、测试源码。文件名带 debug/backup/old 不是删除真实签名文件的理由。
 3. **真实验证**：报告命令的真实退出码。不得把未运行的检查写成通过，不得为过关弱化断言或删除测试。测试中断/超时如实标注。
 4. **删除须核实**：清理前只读盘点、核对内容与哈希；未知文件默认保留。不用通配递归删除；优先精确白名单脚本。
@@ -35,7 +35,7 @@
 ## 四、发布与签名流程
 
 - 安卓只发布 arm64-v8a；Windows 发布安装版 + 便携版；附件固定三个名字。
-- 安卓签名通过环境变量注入（`WORDNEST_KEYSTORE_PATH/STORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD`），CI 从 GitHub Secrets 读取；本地构建用私密目录的 `with-signing-env.ps1`。
+- 安卓签名通过环境变量注入（`WORDNEST_KEYSTORE_PATH/STORE_PASSWORD/KEY_ALIAS/KEY_PASSWORD`），CI 从 GitHub Secrets 读取（Secrets 只能在 CI 内自动使用，AI 不得读取、粘贴或外发其值）；本地构建用私密目录的 `with-signing-env.ps1` 注入，密码值本身不落任何命令参数、日志或聊天记录。
 - 发布前核对：版本号三处一致（pubspec / 设置页 / feeds）、APK 证书指纹、附件 SHA256 与 feeds 中 sizeBytes/sha256。
 - 版本保留策略：GitHub 上保留全部历史 Release；本地只留最新正式版安装包。
 
