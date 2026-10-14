@@ -40,3 +40,8 @@ research/
 *.msix
 *.exe
 *.zip
+signing.jks
+233.jks
+233.key
+*.jks
+*.key

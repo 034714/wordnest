@@ -26,16 +26,24 @@ jobs:
   build-and-release:
     runs-on: windows-latest
     env:
-      # Keystore (keystore.jks) is committed to the repo; credentials are provided
-      # directly so release signing works out of the box. For tighter security,
-      # move these to GitHub Secrets and reference them via secrets.* instead.
-      WORDNEST_KEYSTORE_PATH: ${{ github.workspace }}\keystore.jks
-      WORDNEST_STORE_PASSWORD: REDACTED
-      WORDNEST_KEY_ALIAS: 233
-      WORDNEST_KEY_PASSWORD: REDACTED
+      # Signing credentials live in repository secrets. The keystore is restored
+      # from a base64 secret at build time and never committed.
+      WORDNEST_KEYSTORE_PATH: ${{ github.workspace }}\signing.jks
+      WORDNEST_STORE_PASSWORD: ${{ secrets.WORDNEST_STORE_PASSWORD }}
+      WORDNEST_KEY_ALIAS: ${{ secrets.WORDNEST_KEY_ALIAS }}
+      WORDNEST_KEY_PASSWORD: ${{ secrets.WORDNEST_KEY_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Restore signing keystore from secret
+        if: ${{ github.event_name == 'push' || inputs.build_android }}
+        shell: pwsh
+        run: |
+          [IO.File]::WriteAllBytes(
+            "$env:GITHUB_WORKSPACE\signing.jks",
+            [Convert]::FromBase64String('${{ secrets.WORDNEST_KEYSTORE_B64 }}')
+          )
 
       - name: Validate platform selection
         shell: pwsh
